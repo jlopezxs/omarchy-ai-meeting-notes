@@ -1,17 +1,17 @@
 ---
-name: omarchy-meetings
+name: omarchy-meeting-notepad
 description: >
-  Consult Omarchy Meetings Notepad notes from any project. Use when the user
+  Consult Omarchy AI Meeting Notepad notes from any project. Use when the user
   asks about meetings they had, meeting notes, transcripts, summaries, action
   items from calls, Granola-style notes, Voxtype meetings, the Meetings bar
-  widget, or /omarchy-meetings. Defaults to the latest meeting unless the user
+  widget, or /omarchy-meeting-notepad. Defaults to the latest meeting unless the user
   names another. When looking up a meeting, always read transcript.jsonl (or
   transcript.md) first, not the AI summary.
 ---
 
-# Omarchy Meetings
+# AI Meeting Notepad
 
-Read the user's local meeting notes captured by the **Meetings Notepad** Omarchy bar widget (`jlopezxs.meetings`). Notes are files on disk — no API, no cloud.
+Read the user's local meeting notes captured by the **AI Meeting Notepad** Omarchy bar widget (`jlopezxs.meetings`). Notes are files on disk — no API, no cloud.
 
 Use this skill whenever the user asks what was said in a meeting, wants action items, or wants to search past calls.
 

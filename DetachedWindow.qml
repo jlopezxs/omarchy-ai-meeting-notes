@@ -53,7 +53,7 @@ Item {
 
   function focusWindow() {
     show()
-    Quickshell.execDetached(["hyprctl", "dispatch", "focuswindow", "title:Meeting notepad"])
+    Quickshell.execDetached(["hyprctl", "dispatch", "focuswindow", "title:AI Meeting Notepad"])
   }
 
   function persistNotesDraft() {
@@ -112,7 +112,7 @@ Item {
   FloatingWindow {
     id: window
     visible: false
-    title: "Meeting notepad"
+    title: "AI Meeting Notepad"
     color: Color.popups.background
     implicitWidth: 420
     implicitHeight: 720

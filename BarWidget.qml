@@ -126,7 +126,7 @@ BarWidget {
     fixedWidth: root.vertical ? -1 : Style.bar.iconSlot
     fixedHeight: root.vertical ? Style.bar.iconSlot : -1
     tooltipText: root.detached
-      ? "Meeting notepad is floating — click to focus"
+      ? "AI Meeting Notepad is floating — click to focus"
       : Model.barTooltip(root.state)
 
     onPressed: function(b) {

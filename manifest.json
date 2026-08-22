@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "jlopezxs.meetings",
-  "name": "Meetings Notepad",
+  "name": "AI Meeting Notepad",
   "version": "0.2.0",
   "author": "jlopezxs",
   "license": "MIT",
@@ -15,10 +15,10 @@
     "service": "Service.qml"
   },
   "barWidget": {
-    "displayName": "Meetings",
+    "displayName": "AI Meeting Notepad",
     "description": "Record meetings, live transcript, AI summary, and Q&A over your notes",
     "category": "AI",
-    "aliases": ["meetings", "granola", "notepad", "transcribe"],
+    "aliases": ["meetings", "granola", "notepad", "transcribe", "ai meeting notepad"],
     "defaultSection": "right",
     "allowMultiple": false,
     "defaults": {

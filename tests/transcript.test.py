@@ -82,20 +82,22 @@ assert "**Attendee 1**" in md
 assert "hola" in md
 assert "hello" in md
 assert "[00:01]" in md
-assert mod.ask_agent_launch_prompt("Standup", 0) == "/omarchy-meetings Standup\n\n"
-assert mod.ask_agent_skill_prompt() == "/omarchy-meetings\n\n"
-assert mod.ask_agent_launch_prompt("Meeting 23423", 1755792000).startswith("/omarchy-meetings Meeting 23423 · ")
+assert mod.ask_agent_launch_prompt("Standup", 0) == "/omarchy-meeting-notepad Standup\n\n"
+assert mod.ask_agent_skill_prompt() == "/omarchy-meeting-notepad\n\n"
+assert mod.ask_agent_launch_prompt("Meeting 23423", 1755792000).startswith("/omarchy-meeting-notepad Meeting 23423 · ")
 assert mod.normalize_tag("#Standup") == "standup"
 assert mod.normalize_tag("1:1") == "1-1"
 assert mod.normalize_tags("standup, 1-1, standup") == ["standup", "1-1"]
 assert mod.normalize_tags(["Interview", "interview", ""]) == ["interview"]
 
-agents_marker = Path.home() / ".agents" / "skills" / "omarchy-meetings" / "SKILL.md"
-claude_marker = Path.home() / ".claude" / "skills" / "omarchy-meetings" / "SKILL.md"
+agents_marker = Path.home() / ".agents" / "skills" / "omarchy-meeting-notepad" / "SKILL.md"
+claude_marker = Path.home() / ".claude" / "skills" / "omarchy-meeting-notepad" / "SKILL.md"
+legacy_agents = Path.home() / ".agents" / "skills" / "omarchy-meetings" / "SKILL.md"
+legacy_claude = Path.home() / ".claude" / "skills" / "omarchy-meetings" / "SKILL.md"
 assert agents_marker in mod.SKILL_MARKER_PATHS
-assert any(path.name == "SKILL.md" and path.parent.name == "omarchy-meetings" for path in mod.SKILL_MARKER_PATHS)
-if agents_marker.is_file() or claude_marker.is_file():
-    assert mod.skill_is_installed(), "global omarchy-meetings skill is present but not detected"
+assert any(path.name == "SKILL.md" and path.parent.name == "omarchy-meeting-notepad" for path in mod.SKILL_MARKER_PATHS)
+if agents_marker.is_file() or claude_marker.is_file() or legacy_agents.is_file() or legacy_claude.is_file():
+    assert mod.skill_is_installed(), "global omarchy-meeting-notepad skill is present but not detected"
 
 import tempfile
 

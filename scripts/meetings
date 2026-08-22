@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Meetings notepad helper for the Omarchy bar widget."""
+"""AI Meeting Notepad helper for the Omarchy bar widget."""
 
 from __future__ import annotations
 
@@ -31,22 +31,29 @@ ONBOARDING_FILE = Path.home() / ".local" / "state" / "omarchy" / "meetings-onboa
 LEGACY_ONBOARDING_FILE = Path.home() / ".local" / "state" / "omarchy" / "meetings" / "onboarding.json"
 INDEX_FILENAME = "index.jsonl"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-SKILL_NAME = "omarchy-meetings"
+SKILL_NAME = "omarchy-meeting-notepad"
+SKILL_NAME_LEGACY = "omarchy-meetings"
 SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-ai-meetings-notes"
 SKILL_INSTALL_TIMEOUT_SEC = 180
-SKILL_MARKER_PATHS = (
-    Path.home() / ".agents" / "skills" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".cursor" / "skills" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".cursor" / "skills-cursor" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".claude" / "skills" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".codex" / "skills" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".opencode" / "skills" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".gemini" / "skills" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".codeium" / "windsurf" / "skills" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".windsurf" / "skills" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".config" / "opencode" / "skills" / SKILL_NAME / "SKILL.md",
-    Path.home() / ".github" / "skills" / SKILL_NAME / "SKILL.md",
-)
+
+
+def skill_marker_paths_for(name: str) -> tuple[Path, ...]:
+    return (
+        Path.home() / ".agents" / "skills" / name / "SKILL.md",
+        Path.home() / ".cursor" / "skills" / name / "SKILL.md",
+        Path.home() / ".cursor" / "skills-cursor" / name / "SKILL.md",
+        Path.home() / ".claude" / "skills" / name / "SKILL.md",
+        Path.home() / ".codex" / "skills" / name / "SKILL.md",
+        Path.home() / ".opencode" / "skills" / name / "SKILL.md",
+        Path.home() / ".gemini" / "skills" / name / "SKILL.md",
+        Path.home() / ".codeium" / "windsurf" / "skills" / name / "SKILL.md",
+        Path.home() / ".windsurf" / "skills" / name / "SKILL.md",
+        Path.home() / ".config" / "opencode" / "skills" / name / "SKILL.md",
+        Path.home() / ".github" / "skills" / name / "SKILL.md",
+    )
+
+
+SKILL_MARKER_PATHS = skill_marker_paths_for(SKILL_NAME) + skill_marker_paths_for(SKILL_NAME_LEGACY)
 AGENT_TIMEOUT_SEC = 300
 POLL_INTERVAL_SEC = 1.0
 MEETINGS_CACHE: dict[str, Any] = {"generation": -1, "items": []}
@@ -265,13 +272,18 @@ def skill_is_installed() -> bool:
     try:
         for child in home.iterdir():
             candidates.append(child / "skills" / SKILL_NAME / "SKILL.md")
+            candidates.append(child / "skills" / SKILL_NAME_LEGACY / "SKILL.md")
             candidates.append(child / "agent" / "skills" / SKILL_NAME / "SKILL.md")
+            candidates.append(child / "agent" / "skills" / SKILL_NAME_LEGACY / "SKILL.md")
             candidates.append(child / "data" / "skills" / SKILL_NAME / "SKILL.md")
+            candidates.append(child / "data" / "skills" / SKILL_NAME_LEGACY / "SKILL.md")
         config = home / ".config"
         if config.is_dir():
             for child in config.iterdir():
                 candidates.append(child / "skills" / SKILL_NAME / "SKILL.md")
+                candidates.append(child / "skills" / SKILL_NAME_LEGACY / "SKILL.md")
                 candidates.append(child / "harness" / "skills" / SKILL_NAME / "SKILL.md")
+                candidates.append(child / "harness" / "skills" / SKILL_NAME_LEGACY / "SKILL.md")
     except OSError:
         pass
     seen: set[str] = set()
@@ -1694,7 +1706,7 @@ def format_meeting_datetime(started_at: int) -> str:
 
 def ask_agent_launch_prompt(title: str, started_at: int) -> str:
     name = str(title or "Meeting").strip() or "Meeting"
-    line = f"/omarchy-meetings {name}"
+    line = f"/{SKILL_NAME} {name}"
     when = format_meeting_datetime(started_at)
     if when:
         line += f" · {when}"
@@ -1702,7 +1714,7 @@ def ask_agent_launch_prompt(title: str, started_at: int) -> str:
 
 
 def ask_agent_skill_prompt() -> str:
-    return "/omarchy-meetings\n\n"
+    return f"/{SKILL_NAME}\n\n"
 
 
 def launch_agent_with_prompt(prompt_body: str, prompt_path: Path) -> tuple[bool, str]:
@@ -2457,7 +2469,7 @@ def once_main() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Omarchy meetings notepad helper")
+    parser = argparse.ArgumentParser(description="Omarchy AI Meeting Notepad helper")
     parser.add_argument("--daemon", action="store_true", help="Run as long-lived daemon")
     args = parser.parse_args()
     if args.daemon:

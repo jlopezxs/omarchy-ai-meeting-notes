@@ -1,15 +1,15 @@
 <div align="center">
 
-# 📝 Meetings Notepad for Omarchy
+# 📝 AI Meeting Notepad for Omarchy
 
 > *"Granola-style notes — local, no meeting bot."*
 
-A **meeting notepad** for the **Omarchy** bar — capture desktop and microphone audio with [Voxtype](https://voxtype.io/),  
+**AI Meeting Notepad** for the **Omarchy** bar — capture desktop and microphone audio with [Voxtype](https://voxtype.io/),  
 Markdown on disk, AI summary, and your own notes. Inspired by [Granola](https://www.granola.ai/).
 
 <br>
 
-![Meetings Notepad for Omarchy preview](preview.png)
+![AI Meeting Notepad for Omarchy preview](preview.png)
 
 </div>
 
@@ -52,7 +52,7 @@ omarchy plugin remove jlopezxs.meetings
 | 📋 | **Your notes** | Manual notes auto-saved next to the transcript |
 | 🔍 | **Search** | Find by title, notes, summary, or transcript |
 | 📌 | **Float** | Pin the notepad as a picture-in-picture window on every workspace |
-| 🤖 | **Agent skill** | `/omarchy-meetings` so any agent can read your notes ([skills.sh](https://www.skills.sh/)) |
+| 🤖 | **Agent skill** | `/omarchy-meeting-notepad` so any agent can read your notes ([skills.sh](https://www.skills.sh/)) |
 | 💾 | **Markdown on disk** | One folder per meeting — no cloud, no API |
 
 ---
@@ -92,7 +92,7 @@ After you stop, the view switches to tabs: **Your notes** (once you have notes),
 | Meetings per page | How many meetings fit on each list page (default 5) |
 | Default language | Whisper language (`auto`, `es`, `en`, …) |
 | Summary preprompt | Extra instructions prepended to the AI summary |
-| Agent skill | Install `/omarchy-meetings` **globally** so any agent can read your notes |
+| Agent skill | Install `/omarchy-meeting-notepad` **globally** so any agent can read your notes |
 
 ## Files
 
@@ -110,19 +110,19 @@ After you stop, the view switches to tabs: **Your notes** (once you have notes),
     live-transcript.md   # while recording
 ```
 
-## Agent skill (`/omarchy-meetings`)
+## Agent skill (`/omarchy-meeting-notepad`)
 
-The plugin ships a [skills.sh](https://www.skills.sh/) skill at `skills/omarchy-meetings/`. It tells any agent how the widget works, where notes live, and how to read them.
+The plugin ships a [skills.sh](https://www.skills.sh/) skill at `skills/omarchy-meeting-notepad/`. It tells any agent how the widget works, where notes live, and how to read them.
 
 **From Settings:** open the notepad → gear → **Install globally** (or **Already installed** to reinstall). That opens a terminal and runs the skills CLI with `-g --agent '*'` so every detected agent (Cursor, Claude Code, Codex, …) can use it.
 
 **From GitHub:**
 
 ```bash
-npx skills add jlopezxs/omarchy-ai-meetings-notes -g --skill omarchy-meetings --agent '*'
+npx skills add jlopezxs/omarchy-ai-meetings-notes -g --skill omarchy-meeting-notepad --agent '*'
 ```
 
-The skill lives at [`skills/omarchy-meetings`](https://github.com/jlopezxs/omarchy-ai-meetings-notes/tree/main/skills/omarchy-meetings) in the plugin repo.
+The skill lives at [`skills/omarchy-meeting-notepad`](https://github.com/jlopezxs/omarchy-ai-meetings-notes/tree/main/skills/omarchy-meeting-notepad) in the plugin repo.
 
 [![skills.sh](https://skills.sh/b/jlopezxs/omarchy-ai-meetings-notes)](https://skills.sh/jlopezxs/omarchy-ai-meetings-notes)
 
@@ -150,11 +150,9 @@ omarchy-shell shell call jlopezxs.meetings stopRecording
 
 ## Screenshots
 
-![Meeting list](media/preview-list.png)
-
-![Transcribing a meeting](media/preview-transcribing.png)
-
-![Meeting detail](media/preview-2.png)
+| Meetings list | Transcribing | Detail view |
+|:---:|:---:|:---:|
+| ![Meetings list](media/preview-list.png) | ![Transcribing](media/preview-transcribing.png) | ![Detail view](media/preview-2.png) |
 
 ## Attribution
 

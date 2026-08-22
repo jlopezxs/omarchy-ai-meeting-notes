@@ -592,7 +592,7 @@ Panel {
       spacing: Style.space(10)
 
       Text {
-        text: "Meetings Notepad"
+        text: "AI Meeting Notepad"
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.title
@@ -827,7 +827,7 @@ Panel {
             spacing: Style.space(2)
 
             Text {
-              text: "Meeting Notepad"
+              text: "AI Meeting Notepad"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.title

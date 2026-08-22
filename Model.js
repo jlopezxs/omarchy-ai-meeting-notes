@@ -297,10 +297,10 @@ function barBadgeText(state) {
 }
 
 function barTooltip(state) {
-  if (!state || typeof state !== "object") return "Meetings — notes from audio"
+  if (!state || typeof state !== "object") return "AI Meeting Notepad"
   if (state.recording) return "Transcribing — click to open"
   if (state.busy) return String(state.busyLabel || "Working…")
-  return "Open meeting notepad"
+  return "Open AI Meeting Notepad"
 }
 
 function meetingLabel(entry) {
@@ -647,6 +647,7 @@ function listMeetingsMaxTooltip(max) {
   return "Show " + String(max) + " meetings per page"
 }
 
+var SKILL_NAME = "omarchy-meeting-notepad"
 var SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-ai-meetings-notes"
 
 function skillGithubSource() {
@@ -654,7 +655,7 @@ function skillGithubSource() {
 }
 
 function skillGithubInstallCommand() {
-  return "npx --yes skills add " + SKILL_GITHUB_SOURCE + " -g --skill omarchy-meetings --agent '*' -y"
+  return "npx --yes skills add " + SKILL_GITHUB_SOURCE + " -g --skill " + SKILL_NAME + " --agent '*' -y"
 }
 
 function skillInstallLabel(installed) {
@@ -663,8 +664,8 @@ function skillInstallLabel(installed) {
 
 function skillInstallTooltip(installed) {
   if (installed)
-    return "Opens a terminal to reinstall /omarchy-meetings globally"
-  return "Opens a terminal to install /omarchy-meetings globally so any agent can read your meetings"
+    return "Opens a terminal to reinstall /omarchy-meeting-notepad globally"
+  return "Opens a terminal to install /omarchy-meeting-notepad globally so any agent can read your meetings"
 }
 
 function skillInstallStatusText(installed) {
@@ -672,7 +673,7 @@ function skillInstallStatusText(installed) {
 }
 
 function skillInstallHelpText() {
-  return "Installs /omarchy-meetings globally via the skills.sh CLI so Cursor, Claude Code, Codex, and other agents can find and read your meeting notes from any project."
+  return "Installs /omarchy-meeting-notepad globally via the skills.sh CLI so Cursor, Claude Code, Codex, and other agents can find and read your meeting notes from any project."
 }
 
 function defaultWidgetSettings() {
@@ -993,13 +994,13 @@ function deleteMeetingTooltip(state, meetingPath, recordingMeetingPath) {
 function askAgentLaunchPrompt(state) {
   var title = String((state && state.title) || "Meeting").trim() || "Meeting"
   var when = formatDateTime(state && state.startedAt ? state.startedAt : 0)
-  var line = "/omarchy-meetings " + title
+  var line = "/omarchy-meeting-notepad " + title
   if (when) line += " · " + when
   return line + "\n\n"
 }
 
 function askAgentSkillPrompt() {
-  return "/omarchy-meetings\n\n"
+  return "/omarchy-meeting-notepad\n\n"
 }
 
 function askAgentButtonLabel(state) {
@@ -1015,19 +1016,19 @@ function canAskAgent(state) {
 
 function askAgentTooltip(state) {
   if (!state || state.skillInstalled !== true) {
-    return "Installs the /omarchy-meetings skill globally so your default agent can read this meeting's transcript and notes from any project. After that, Ask Agent opens a prompt with the meeting title and date so you can add your question."
+    return "Installs the /omarchy-meeting-notepad skill globally so your default agent can read this meeting's transcript and notes from any project. After that, Ask Agent opens a prompt with the meeting title and date so you can add your question."
   }
   if (!state.defaultAgent)
     return "Set default agent: omarchy default agent <name>"
-  return "Open your default agent with /omarchy-meetings plus this meeting's title and date, then add your question"
+  return "Open your default agent with /omarchy-meeting-notepad plus this meeting's title and date, then add your question"
 }
 
 function askAgentListTooltip(state) {
   if (!state || state.skillInstalled !== true)
-    return "Install /omarchy-meetings globally so any agent can read your meeting notes"
+    return "Install /omarchy-meeting-notepad globally so any agent can read your meeting notes"
   if (!state.defaultAgent)
     return "Set default agent: omarchy default agent <name>"
-  return "Open your default agent with /omarchy-meetings"
+  return "Open your default agent with /omarchy-meeting-notepad"
 }
 
 function normalizeDetailTabIndex(state, tabIndex) {

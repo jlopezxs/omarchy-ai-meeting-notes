@@ -10,11 +10,11 @@ python3 tests/transcript.test.py
 
 python3 - <<'PY'
 from pathlib import Path
-skill = Path("skills/omarchy-meetings/SKILL.md")
-assert skill.is_file(), "missing skills/omarchy-meetings/SKILL.md"
+skill = Path("skills/omarchy-meeting-notepad/SKILL.md")
+assert skill.is_file(), "missing skills/omarchy-meeting-notepad/SKILL.md"
 text = skill.read_text(encoding="utf-8")
 assert text.startswith("---"), "SKILL.md must start with YAML frontmatter"
-assert "name: omarchy-meetings" in text
+assert "name: omarchy-meeting-notepad" in text
 assert "description:" in text
 assert "index.jsonl" in text
 assert "transcript.jsonl" in text
