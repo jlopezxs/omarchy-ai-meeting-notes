@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -28,7 +29,48 @@ empty_export = """# Meeting 23423
 """
 assert mod.live_transcript_is_empty("")
 assert mod.live_transcript_is_empty(empty_export)
+assert mod.live_transcript_is_empty("_No speech was captured in this meeting._\n")
+assert mod.live_transcript_is_empty(
+    "# Meeting\n\n## Transcript\n\n_No speech was captured in this meeting._\n"
+)
 assert not mod.live_transcript_is_empty("**Me** *[00:00]* hola")
+
+assert mod.iso_from_unix(0) == ""
+assert mod.iso_from_unix(1755792000) == "2025-08-21T16:00:00Z"
+assert mod.format_timestamp_hms(72000) == "00:01:12"
+assert mod.speaker_id_for_label("You") == "self"
+assert mod.speaker_id_for_label("Attendee 1") == "attendee-1"
+
+voxtype_md = """# Sprint Planning
+
+## Meeting Info
+
+- **Word Count:** 7
+- **Segments:** 1
+
+## Transcript
+
+### You
+
+*[00:00]* Ship billing API on Thursday
+"""
+turns = mod.turns_from_markdown(voxtype_md)
+assert len(turns) == 1
+assert turns[0]["speaker"] == "Me"
+assert turns[0]["speakerId"] == "self"
+assert turns[0]["t"] == "00:00:00"
+assert "billing" in turns[0]["text"]
+
+inline_turns = mod.turns_from_markdown("**Attendee 1** *[01:12]* Hello there")
+assert len(inline_turns) == 1
+assert inline_turns[0]["speaker"] == "Attendee 1"
+assert inline_turns[0]["t"] == "00:01:12"
+
+segment_turns = mod.turns_from_segments(
+    [{"text": "hola", "source": "microphone", "speaker_id": "You", "start_ms": 0}]
+)
+assert segment_turns[0]["speaker"] == "Me"
+assert segment_turns[0]["speakerId"] == "self"
 
 segments = [
     {"text": "hola", "source": "microphone", "speaker_id": "You", "start_ms": 0},
@@ -61,7 +103,9 @@ onboarding_dir = Path(tempfile.mkdtemp(prefix="meetings-onboarding-"))
 onboarding_file = onboarding_dir / "onboarding.json"
 onboarding_file.write_text('{"complete": true}\n', encoding="utf-8")
 original_onboarding = mod.ONBOARDING_FILE
+original_legacy = mod.LEGACY_ONBOARDING_FILE
 mod.ONBOARDING_FILE = onboarding_file
+mod.LEGACY_ONBOARDING_FILE = onboarding_dir / "legacy-onboarding.json"
 try:
     assert mod.onboarding_complete() is True
     mod.reset_onboarding()
@@ -69,6 +113,7 @@ try:
     assert mod.onboarding_complete() is False
 finally:
     mod.ONBOARDING_FILE = original_onboarding
+    mod.LEGACY_ONBOARDING_FILE = original_legacy
 
 notes_root = Path(tempfile.mkdtemp(prefix="meetings-delete-all-"))
 meeting_a = notes_root / "meeting-a"
@@ -93,10 +138,42 @@ try:
     assert meeting_b.is_dir() is False
     assert (notes_root / "onboarding.json").is_file()
     assert (notes_root / "notes.md").is_file()
+    assert (notes_root / "index.jsonl").is_file()
+    assert (notes_root / "index.jsonl").read_text(encoding="utf-8") == ""
 finally:
     mod.RUNTIME.settings = original_settings
     mod.RUNTIME.recording_pending = original_recording
     mod.query_active_meeting = original_query
     mod.emit = original_emit
+
+catalog_root = Path(tempfile.mkdtemp(prefix="meetings-catalog-"))
+meeting = catalog_root / "2026-08-22-sprint-planning"
+meeting.mkdir()
+(meeting / "transcript.md").write_text(voxtype_md, encoding="utf-8")
+(meeting / "meta.json").write_text(
+    '{"title": "Sprint Planning", "startedAt": 1755792000, "status": "completed", "notesDir": "/old"}\n',
+    encoding="utf-8",
+)
+catalog_settings = mod.Settings(notes_dir=str(catalog_root), whisper_language="es")
+mod.migrate_notes_root(catalog_settings)
+meta = json.loads((meeting / "meta.json").read_text(encoding="utf-8"))
+assert "notesDir" not in meta
+assert meta["id"] == "2026-08-22-sprint-planning"
+assert meta["startedAtIso"].endswith("Z")
+assert meta["language"] == "es"
+assert meta["participants"][0]["id"] == "self"
+assert meta["stats"]["segmentCount"] == 1
+jsonl = (meeting / "transcript.jsonl").read_text(encoding="utf-8").strip()
+assert jsonl
+turn = json.loads(jsonl.splitlines()[0])
+assert turn["speaker"] == "Me"
+assert "billing" in turn["text"]
+index_line = (catalog_root / "index.jsonl").read_text(encoding="utf-8").strip()
+record = json.loads(index_line)
+assert record["id"] == "2026-08-22-sprint-planning"
+assert record["hasTranscript"] is True
+assert "Me" in record["speakers"]
+insights = json.loads((meeting / "insights.json").read_text(encoding="utf-8"))
+assert "Me" in insights["peopleMentioned"]
 
 print("transcript.test.py: ok")

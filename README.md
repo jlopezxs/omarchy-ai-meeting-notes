@@ -65,7 +65,7 @@ On first open, a **3-step onboarding** walks you through:
 2. **How it works** — Voxtype + PipeWire + Whisper + local Markdown
 3. **Get set up** — **Install Voxtype** (opens the Omarchy installer) or **Get started** if already installed
 
-Progress is saved to `~/.local/state/omarchy/meetings/onboarding.json`.
+Progress is saved to `~/.local/state/omarchy/meetings-onboarding.json`.
 
 ## Using it
 
@@ -94,15 +94,20 @@ After you stop, the view switches to tabs: **Your notes** (once you have notes),
 | Summary preprompt | Extra instructions prepended to the AI summary |
 | Agent skill | Install `/omarchy-meetings` **globally** so any agent can read your notes |
 
-## Files per meeting
+## Files
 
 ```
-meta.json            # title, timestamps
-notes.md             # your manual notes (optional)
-transcript.md
-summary.md
-chat.md              # Q&A history
-live-transcript.md   # while recording
+<notes-root>/
+  index.jsonl            # catalog for agents — one meeting per line
+  YYYY-MM-DD-slug/
+    meta.json            # title, ISO + unix times, speakers, stats
+    transcript.jsonl     # one spoken turn per line (grep / cite this)
+    transcript.md        # same content, human-readable
+    notes.md             # your manual notes (optional)
+    summary.md           # AI recap (not the search source)
+    insights.json        # optional actions / topics / people
+    chat.md              # Q&A history
+    live-transcript.md   # while recording
 ```
 
 ## Agent skill (`/omarchy-meetings`)
@@ -114,10 +119,12 @@ The plugin ships a [skills.sh](https://www.skills.sh/) skill at `skills/omarchy-
 **From GitHub:**
 
 ```bash
-npx skills add jlopezxs/omarchy-meetings-notepad-ai -g
+npx skills add jlopezxs/omarchy-ai-meetings-notes -g --skill omarchy-meetings --agent '*'
 ```
 
-[![skills.sh](https://skills.sh/b/jlopezxs/omarchy-meetings-notepad-ai)](https://skills.sh/jlopezxs/omarchy-meetings-notepad-ai)
+The skill lives at [`skills/omarchy-meetings`](https://github.com/jlopezxs/omarchy-ai-meetings-notes/tree/main/skills/omarchy-meetings) in the plugin repo.
+
+[![skills.sh](https://skills.sh/b/jlopezxs/omarchy-ai-meetings-notes)](https://skills.sh/jlopezxs/omarchy-ai-meetings-notes)
 
 ## Requirements
 
@@ -142,6 +149,10 @@ omarchy-shell shell call jlopezxs.meetings stopRecording
 ```
 
 ## Screenshots
+
+![Meeting list](media/preview-list.png)
+
+![Transcribing a meeting](media/preview-transcribing.png)
 
 ![Meeting detail](media/preview-2.png)
 

@@ -18,6 +18,13 @@ Rectangle {
   property color dim: Qt.darker(foreground, 1.55)
   property string fontFamily: Style.font.family
 
+  property string titleTrailing: ""
+  property bool showOpenStop: false
+  property bool showOpenAction: true
+
+  signal openClicked()
+  signal stopClicked()
+
   radius: Style.cornerRadius
   color: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.04)
   border.color: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.12)
@@ -54,11 +61,23 @@ Rectangle {
         font.letterSpacing: 0.8
         elide: Text.ElideRight
       }
+
+      Text {
+        visible: root.titleTrailing !== ""
+        text: root.titleTrailing
+        color: root.accent
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 0.8
+        horizontalAlignment: Text.AlignRight
+      }
     }
 
     RowLayout {
       Layout.fillWidth: true
       spacing: Style.space(8)
+      visible: root.headline !== ""
 
       Text {
         text: root.headline
@@ -66,6 +85,13 @@ Rectangle {
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
         font.bold: true
+
+        MouseArea {
+          anchors.fill: parent
+          enabled: root.showOpenStop && root.showOpenAction
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.openClicked()
+        }
       }
 
       Rectangle {
@@ -113,6 +139,43 @@ Rectangle {
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       wrapMode: Text.WordWrap
+    }
+
+    RowLayout {
+      Layout.fillWidth: true
+      spacing: Style.spacing.controlGap
+      visible: root.showOpenStop
+
+      PanelTextButton {
+        Layout.fillWidth: true
+        visible: root.showOpenAction
+        label: "Open"
+        tooltip: "Open the meeting being transcribed"
+        labelColor: root.accent
+        accentColor: root.accent
+        urgentColor: root.accent
+        urgent: true
+        fontFamily: root.fontFamily
+        fontPixelSize: Style.font.bodySmall
+        labelBold: true
+        actionable: true
+        onActivated: root.openClicked()
+      }
+
+      PanelTextButton {
+        Layout.fillWidth: true
+        label: "Stop"
+        tooltip: "Stop transcribing and save"
+        labelColor: root.accent
+        accentColor: root.accent
+        urgentColor: root.accent
+        urgent: true
+        fontFamily: root.fontFamily
+        fontPixelSize: Style.font.bodySmall
+        labelBold: true
+        actionable: true
+        onActivated: root.stopClicked()
+      }
     }
   }
 

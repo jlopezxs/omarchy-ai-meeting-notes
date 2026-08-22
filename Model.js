@@ -1,6 +1,6 @@
 // Pure helpers for the meetings notepad panel. No QML types.
 
-var MEETING_ICON = "󰎞" // nf-md-note-text
+var MEETING_ICON = "󱘓" // nf-md-notebook-plus-outline
 
 function meetingIcon() {
   return MEETING_ICON
@@ -583,6 +583,7 @@ function canOpenMeetingDetail(state, path) {
   var target = String(path || "").trim()
   if (target === "") return false
   if (String(state.meetingPath || "") === target) return true
+  if (String(state.recordingMeetingPath || "") === target) return true
   return meetingExists(state.meetings, target)
 }
 
@@ -618,6 +619,14 @@ function panelHeroSubtitle() {
   return "RECORD · TRANSCRIBE · SUMMARIZE"
 }
 
+function settingsBackIcon() {
+  return "󰁍" // nf-md-arrow-left
+}
+
+function settingsHeroSubtitle() {
+  return "FOLDER · LANGUAGE · SKILL · DATA"
+}
+
 function detailTabTooltip(tabId) {
   if (tabId === "notes") return "View your notes"
   if (tabId === "summary") return "View AI summary"
@@ -638,7 +647,7 @@ function listMeetingsMaxTooltip(max) {
   return "Show " + String(max) + " meetings per page"
 }
 
-var SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-meetings-notepad-ai"
+var SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-ai-meetings-notes"
 
 function skillGithubSource() {
   return SKILL_GITHUB_SOURCE
@@ -762,6 +771,11 @@ function isGeneratingSummary(state) {
   return label.indexOf("generating") >= 0 || label.indexOf("summary") >= 0
 }
 
+function actionBusy(state) {
+  if (!state || state.busy !== true) return false
+  return !isGeneratingSummary(state)
+}
+
 function summaryLoadingVisible(state, tabId) {
   if (String(tabId || "") !== "summary") return false
   if (String((state && state.summary) || "").trim() !== "") return false
@@ -806,7 +820,17 @@ function recordingOpenPath(state) {
   if (!state || typeof state !== "object") return ""
   var path = String(state.recordingMeetingPath || "").trim()
   if (path !== "") return path
-  return String(state.meetingPath || "").trim()
+  path = String(state.meetingPath || "").trim()
+  if (path !== "") return path
+  var list = Array.isArray(state.meetings) ? state.meetings : []
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i] || {}
+    if (entry.isRecording === true) {
+      var recordingPath = String(entry.path || "").trim()
+      if (recordingPath !== "") return recordingPath
+    }
+  }
+  return ""
 }
 
 function recordingBannerTitle(state) {
@@ -938,11 +962,25 @@ function hasMeetingContent(state) {
   )
 }
 
+function resolveDetailMeetingPath(state, lastPath, entry, savedPath) {
+  var fromState = ""
+  if (state && typeof state === "object") fromState = String(state.meetingPath || "")
+  var fromEntry = entry && entry.path ? String(entry.path) : ""
+  var candidates = [lastPath, fromEntry, fromState, savedPath]
+  for (var i = 0; i < candidates.length; i++) {
+    var path = String(candidates[i] || "").trim()
+    if (path) return path
+  }
+  return ""
+}
+
 function canDeleteMeeting(state, meetingPath, recordingMeetingPath) {
   var path = String(meetingPath || "").trim()
   if (!path) return false
-  var recordingPath = String(recordingMeetingPath || state.recordingMeetingPath || "").trim()
-  if (state.recording === true && recordingPath !== "" && path === recordingPath) return false
+  var recordingPath = String(
+    recordingMeetingPath || (state && typeof state === "object" ? state.recordingMeetingPath : "") || ""
+  ).trim()
+  if (state && state.recording === true && recordingPath !== "" && path === recordingPath) return false
   return true
 }
 
@@ -971,7 +1009,8 @@ function askAgentButtonLabel(state) {
 
 function canAskAgent(state) {
   if (!state || typeof state !== "object") return false
-  return state.meetingFinished === true
+  if (state.recording === true || state.recordingThisMeeting === true) return false
+  return state.meetingFinished === true || isGeneratingSummary(state)
 }
 
 function askAgentTooltip(state) {
@@ -1047,6 +1086,8 @@ if (typeof module !== "undefined") {
     detailHeaderTitle: detailHeaderTitle,
     detailHeaderSubtitle: detailHeaderSubtitle,
     panelHeroSubtitle: panelHeroSubtitle,
+    settingsBackIcon: settingsBackIcon,
+    settingsHeroSubtitle: settingsHeroSubtitle,
     meetingListSubtitle: meetingListSubtitle,
     liveTranscriptPreview: liveTranscriptPreview,
     liveSummaryPreview: liveSummaryPreview,
@@ -1057,6 +1098,7 @@ if (typeof module !== "undefined") {
     liveTranscriptWaitingText: liveTranscriptWaitingText,
     isSavingMeeting: isSavingMeeting,
     isGeneratingSummary: isGeneratingSummary,
+    actionBusy: actionBusy,
     summaryLoadingVisible: summaryLoadingVisible,
     summaryLoadingTitle: summaryLoadingTitle,
     summaryLoadingCaption: summaryLoadingCaption,
@@ -1088,6 +1130,7 @@ if (typeof module !== "undefined") {
     buildCopyText: buildCopyText,
     buildCopyMarkdown: buildCopyMarkdown,
     hasMeetingContent: hasMeetingContent,
+    resolveDetailMeetingPath: resolveDetailMeetingPath,
     canDeleteMeeting: canDeleteMeeting,
     deleteMeetingTooltip: deleteMeetingTooltip,
     askAgentLaunchPrompt: askAgentLaunchPrompt,

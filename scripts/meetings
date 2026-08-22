@@ -27,9 +27,12 @@ AGENT_FILE = Path.home() / ".config" / "omarchy" / "defaults" / "agent"
 VOXTYPE_CONFIG = Path.home() / ".config" / "voxtype" / "config.toml"
 VOXTYPE_MEETINGS_DB = Path.home() / ".local" / "share" / "voxtype" / "meetings" / "index.db"
 DEFAULT_NOTES_DIR = Path.home() / ".local" / "state" / "omarchy" / "meetings"
-ONBOARDING_FILE = Path.home() / ".local" / "state" / "omarchy" / "meetings" / "onboarding.json"
+ONBOARDING_FILE = Path.home() / ".local" / "state" / "omarchy" / "meetings-onboarding.json"
+LEGACY_ONBOARDING_FILE = Path.home() / ".local" / "state" / "omarchy" / "meetings" / "onboarding.json"
+INDEX_FILENAME = "index.jsonl"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 SKILL_NAME = "omarchy-meetings"
+SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-ai-meetings-notes"
 SKILL_INSTALL_TIMEOUT_SEC = 180
 SKILL_MARKER_PATHS = (
     Path.home() / ".agents" / "skills" / SKILL_NAME / "SKILL.md",
@@ -193,11 +196,18 @@ def voxtype_installed() -> bool:
     return bool(VOXTYPE_BIN)
 
 
+def onboarding_path() -> Path:
+    if ONBOARDING_FILE.is_file():
+        return ONBOARDING_FILE
+    return LEGACY_ONBOARDING_FILE
+
+
 def onboarding_complete() -> bool:
-    if not ONBOARDING_FILE.is_file():
+    path = onboarding_path()
+    if not path.is_file():
         return False
     try:
-        data = json.loads(ONBOARDING_FILE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
     return data.get("complete") is True
@@ -209,12 +219,29 @@ def mark_onboarding_complete() -> None:
         json.dumps({"complete": True, "completedAt": now_ts()}, indent=2) + "\n",
         encoding="utf-8",
     )
+    if LEGACY_ONBOARDING_FILE.is_file() and LEGACY_ONBOARDING_FILE != ONBOARDING_FILE:
+        try:
+            LEGACY_ONBOARDING_FILE.unlink()
+        except OSError:
+            pass
 
 
 def reset_onboarding() -> None:
+    for path in (ONBOARDING_FILE, LEGACY_ONBOARDING_FILE):
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def migrate_onboarding_file() -> None:
+    if ONBOARDING_FILE.is_file() or not LEGACY_ONBOARDING_FILE.is_file():
+        return
     try:
-        if ONBOARDING_FILE.is_file():
-            ONBOARDING_FILE.unlink()
+        ONBOARDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ONBOARDING_FILE.write_text(LEGACY_ONBOARDING_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+        LEGACY_ONBOARDING_FILE.unlink()
     except OSError:
         pass
 
@@ -262,13 +289,9 @@ def skill_is_installed() -> bool:
 
 
 def install_meetings_skill() -> tuple[bool, str]:
-    source = skill_dir()
-    if not (source / "SKILL.md").is_file():
-        return False, f"Skill not found at {source}"
-
     command = (
         "npx --yes skills add "
-        f"{shlex.quote(str(PLUGIN_ROOT))} "
+        f"{shlex.quote(SKILL_GITHUB_SOURCE)} "
         f"-g --skill {shlex.quote(SKILL_NAME)} --agent '*' -y"
     )
     try:
@@ -534,7 +557,7 @@ def link_active_meeting_to_folder(folder: Path, active: dict[str, Any]) -> None:
     meta["voxtypeId"] = str(active.get("id") or "")
     if active.get("started_at"):
         meta["startedAt"] = int(active.get("started_at") or meta.get("startedAt") or now_ts())
-    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    write_meeting_meta(folder, meta, turns=[])
     RUNTIME.recording_meeting_path = str(folder)
     clear_live_artifacts(folder)
     invalidate_live_cache()
@@ -768,11 +791,14 @@ def live_transcript_is_empty(text: str) -> bool:
     value = str(text or "").strip()
     if not value:
         return True
+    lowered = value.lower()
+    if "no speech was captured" in lowered:
+        return True
     if re.search(r"\*\*Word Count:\*\*\s*0\b", value) and re.search(r"\*\*Segments:\*\*\s*0\b", value):
         return True
     if "## Transcript" in value:
         body = value.split("## Transcript", 1)[-1].strip()
-        if not body:
+        if not body or "no speech was captured" in body.lower():
             return True
     return False
 
@@ -783,6 +809,42 @@ def format_timestamp_ms(ms: Any) -> str:
     except (TypeError, ValueError):
         total = 0
     return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def format_timestamp_hms(ms: Any) -> str:
+    try:
+        total = max(0, int(ms) // 1000)
+    except (TypeError, ValueError):
+        total = 0
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def iso_from_unix(ts: Any) -> str:
+    try:
+        value = int(ts or 0)
+    except (TypeError, ValueError):
+        return ""
+    if value <= 0:
+        return ""
+    return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_stamp_ms(stamp: str) -> int:
+    parts: list[int] = []
+    for piece in str(stamp or "").split(":"):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            return 0
+    if len(parts) == 3:
+        return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000
+    if len(parts) == 2:
+        return (parts[0] * 60 + parts[1]) * 1000
+    if len(parts) == 1:
+        return parts[0] * 1000
+    return 0
 
 
 def segment_map_key(segment: dict[str, Any]) -> str:
@@ -830,6 +892,343 @@ def segments_to_live_markdown(segments: list[dict[str, Any]]) -> str:
         start = segment.get("start_ms", segment.get("startMs", 0))
         lines.append(f"**{speaker}** *[{format_timestamp_ms(start)}]* {text}")
     return "\n\n".join(lines)
+
+
+TURN_INLINE_RE = re.compile(
+    r"^\*\*(?P<speaker>[^*]+)\*\*\s*\*\[(?P<stamp>\d{1,2}:\d{2}(?::\d{2})?)\]\*\s*(?P<text>.*)$"
+)
+TURN_HEADER_RE = re.compile(r"^###\s+(?P<speaker>.+)$")
+TURN_STAMP_RE = re.compile(r"^\*?\[(?P<stamp>\d{1,2}:\d{2}(?::\d{2})?)\]\*?\s*(?P<text>.*)$")
+
+
+def display_speaker_name(name: str) -> str:
+    label = str(name or "").strip()
+    lowered = label.lower()
+    if lowered in {"you", "me"}:
+        return "Me"
+    if lowered == "remote":
+        return "Attendee 1"
+    return label or "Attendee 1"
+
+
+def speaker_id_for_label(name: str) -> str:
+    label = display_speaker_name(name)
+    if label.lower() == "me":
+        return "self"
+    return slugify(label) or "speaker"
+
+
+def make_turn(index: int, speaker: str, ms: int, text: str) -> dict[str, Any]:
+    label = display_speaker_name(speaker)
+    return {
+        "i": index,
+        "t": format_timestamp_hms(ms),
+        "ms": max(0, int(ms or 0)),
+        "speaker": label,
+        "speakerId": speaker_id_for_label(label),
+        "text": text.strip(),
+    }
+
+
+def turns_from_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not segments:
+        return []
+    mapping = build_live_speaker_map(segments)
+    turns: list[dict[str, Any]] = []
+    for segment in segments:
+        text = str(segment.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = speaker_display_name(segment, mapping)
+        start = segment.get("start_ms", segment.get("startMs", 0))
+        try:
+            ms = int(start or 0)
+        except (TypeError, ValueError):
+            ms = 0
+        turns.append(make_turn(len(turns), speaker, ms, text))
+    return turns
+
+
+def turns_from_markdown(text: str) -> list[dict[str, Any]]:
+    value = str(text or "")
+    if not value.strip() or live_transcript_is_empty(value):
+        return []
+    turns: list[dict[str, Any]] = []
+    speaker = ""
+    in_transcript = "## Transcript" not in value
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if line == "## Transcript":
+            in_transcript = True
+            speaker = ""
+            continue
+        if line.startswith("## ") and line != "## Transcript":
+            in_transcript = False
+            speaker = ""
+            continue
+        if not in_transcript or not line:
+            continue
+        inline = TURN_INLINE_RE.match(line)
+        if inline:
+            body = inline.group("text").strip()
+            if body:
+                turns.append(
+                    make_turn(
+                        len(turns),
+                        inline.group("speaker"),
+                        parse_stamp_ms(inline.group("stamp")),
+                        body,
+                    )
+                )
+            continue
+        header = TURN_HEADER_RE.match(line)
+        if header:
+            speaker = display_speaker_name(header.group("speaker"))
+            continue
+        stamp = TURN_STAMP_RE.match(line)
+        if stamp and speaker:
+            body = stamp.group("text").strip()
+            if body:
+                turns.append(
+                    make_turn(len(turns), speaker, parse_stamp_ms(stamp.group("stamp")), body)
+                )
+    return turns
+
+
+def participants_from_turns(turns: list[dict[str, Any]]) -> list[dict[str, str]]:
+    seen: set[str] = set()
+    participants: list[dict[str, str]] = []
+    for turn in turns:
+        speaker_id = str(turn.get("speakerId") or "")
+        if not speaker_id or speaker_id in seen:
+            continue
+        seen.add(speaker_id)
+        name = str(turn.get("speaker") or speaker_id)
+        participants.append(
+            {
+                "id": speaker_id,
+                "name": name,
+                "role": "self" if speaker_id == "self" else "remote",
+            }
+        )
+    return participants
+
+
+def stats_from_turns(turns: list[dict[str, Any]]) -> dict[str, int]:
+    words = 0
+    speakers: set[str] = set()
+    for turn in turns:
+        words += len(str(turn.get("text") or "").split())
+        speaker_id = str(turn.get("speakerId") or "")
+        if speaker_id:
+            speakers.add(speaker_id)
+    return {
+        "wordCount": words,
+        "segmentCount": len(turns),
+        "speakerCount": len(speakers),
+    }
+
+
+def read_json_object(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def write_transcript_jsonl(folder: Path, turns: list[dict[str, Any]]) -> None:
+    path = folder / "transcript.jsonl"
+    if not turns:
+        path.write_text("", encoding="utf-8")
+        return
+    path.write_text(
+        "".join(json.dumps(turn, ensure_ascii=False) + "\n" for turn in turns),
+        encoding="utf-8",
+    )
+
+
+def read_transcript_turns(folder: Path) -> list[dict[str, Any]]:
+    path = folder / "transcript.jsonl"
+    if path.is_file():
+        turns: list[dict[str, Any]] = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                raw = line.strip()
+                if not raw:
+                    continue
+                item = json.loads(raw)
+                if isinstance(item, dict) and str(item.get("text") or "").strip():
+                    turns.append(item)
+        except (OSError, json.JSONDecodeError):
+            turns = []
+        if turns:
+            return turns
+    return turns_from_markdown(read_optional_text(folder / "transcript.md") or read_optional_text(folder / "live-transcript.md"))
+
+
+def extract_section_bullets(markdown: str, needles: tuple[str, ...]) -> list[str]:
+    items: list[str] = []
+    capturing = False
+    for raw_line in str(markdown or "").splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip().lower()
+            capturing = any(needle in heading for needle in needles)
+            continue
+        if not capturing:
+            continue
+        if stripped.startswith(("-", "*", "•")):
+            item = stripped.lstrip("-*• ").strip()
+            if item:
+                items.append(item)
+    return items
+
+
+def write_insights_json(
+    folder: Path,
+    turns: list[dict[str, Any]],
+    summary: str = "",
+    tags: list[str] | None = None,
+) -> None:
+    people: list[str] = []
+    seen: set[str] = set()
+    for turn in turns:
+        name = str(turn.get("speaker") or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            people.append(name)
+    write_json(
+        folder / "insights.json",
+        {
+            "decisions": extract_section_bullets(summary, ("decision",)),
+            "actionItems": extract_section_bullets(summary, ("action item", "action", "next step")),
+            "peopleMentioned": people,
+            "topics": list(tags or []),
+            "openQuestions": extract_section_bullets(summary, ("open question", "question")),
+        },
+    )
+
+
+def meeting_has_transcript(folder: Path, turns: list[dict[str, Any]] | None = None) -> bool:
+    resolved = turns if turns is not None else read_transcript_turns(folder)
+    if resolved:
+        return True
+    md = read_optional_text(folder / "transcript.md")
+    return bool(md.strip()) and not live_transcript_is_empty(md)
+
+
+def write_meeting_meta(
+    folder: Path,
+    updates: dict[str, Any] | None = None,
+    settings: Settings | None = None,
+    turns: list[dict[str, Any]] | None = None,
+    rebuild_index: bool = True,
+) -> dict[str, Any]:
+    meta = read_json_object(folder / "meta.json")
+    if updates:
+        meta.update(updates)
+    meta.pop("notesDir", None)
+    meta["id"] = str(meta.get("id") or folder.name)
+    started_at = int(meta.get("startedAt") or 0)
+    ended_at = int(meta.get("endedAt") or 0)
+    meta["startedAtIso"] = iso_from_unix(started_at)
+    if ended_at:
+        meta["endedAtIso"] = iso_from_unix(ended_at)
+    elif "endedAtIso" not in meta:
+        meta["endedAtIso"] = ""
+    meta["timezone"] = str(meta.get("timezone") or "UTC")
+    language = str(meta.get("language") or "").strip()
+    if not language:
+        language = str((settings or RUNTIME.settings).whisper_language or "auto")
+    meta["language"] = language or "auto"
+    meta["tags"] = normalize_tags(meta.get("tags"))
+    if turns is None:
+        turns = read_transcript_turns(folder)
+    if turns or not meta.get("participants"):
+        participants = participants_from_turns(turns)
+        if participants or "participants" not in meta:
+            meta["participants"] = participants
+    meta["stats"] = stats_from_turns(turns)
+    if "topics" not in meta or not isinstance(meta.get("topics"), list):
+        meta["topics"] = list(meta.get("tags") or [])
+    write_json(folder / "meta.json", meta)
+    if rebuild_index:
+        rebuild_meetings_index(settings)
+    return meta
+
+
+def index_record_for(folder: Path, settings: Settings | None = None) -> dict[str, Any]:
+    meta = read_json_object(folder / "meta.json")
+    turns = read_transcript_turns(folder)
+    stats = meta.get("stats") if isinstance(meta.get("stats"), dict) else stats_from_turns(turns)
+    speakers = [
+        str(item.get("name") or "")
+        for item in (meta.get("participants") or [])
+        if isinstance(item, dict) and item.get("name")
+    ]
+    if not speakers:
+        speakers = list(dict.fromkeys(str(turn.get("speaker") or "") for turn in turns if turn.get("speaker")))
+    started_iso = str(meta.get("startedAtIso") or iso_from_unix(meta.get("startedAt")))
+    return {
+        "id": str(meta.get("id") or folder.name),
+        "title": str(meta.get("title") or folder.name),
+        "startedAt": started_iso,
+        "durationSecs": int(meta.get("durationSecs") or 0),
+        "status": str(meta.get("status") or ""),
+        "speakers": speakers,
+        "language": str(meta.get("language") or (settings or RUNTIME.settings).whisper_language or "auto"),
+        "tags": normalize_tags(meta.get("tags")),
+        "path": str(folder),
+        "hasTranscript": meeting_has_transcript(folder, turns),
+        "wordCount": int(stats.get("wordCount") or 0),
+    }
+
+
+def rebuild_meetings_index(settings: Settings | None = None) -> None:
+    root = notes_dir(settings)
+    if not root.is_dir():
+        return
+    records: list[dict[str, Any]] = []
+    for entry in root.iterdir():
+        if not entry.is_dir() or not (entry / "meta.json").is_file():
+            continue
+        records.append(index_record_for(entry, settings))
+    records.sort(key=lambda item: str(item.get("startedAt") or ""), reverse=True)
+    (root / INDEX_FILENAME).write_text(
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records),
+        encoding="utf-8",
+    )
+
+
+def migrate_meeting_folder(folder: Path, settings: Settings | None = None) -> None:
+    if not (folder / "meta.json").is_file():
+        return
+    turns = read_transcript_turns(folder)
+    if not (folder / "transcript.jsonl").is_file():
+        write_transcript_jsonl(folder, turns)
+    summary = read_optional_text(folder / "summary.md")
+    tags = normalize_tags(read_json_object(folder / "meta.json").get("tags"))
+    if not (folder / "insights.json").is_file():
+        write_insights_json(folder, turns, summary, tags)
+    write_meeting_meta(folder, settings=settings, turns=turns, rebuild_index=False)
+
+
+def migrate_notes_root(settings: Settings | None = None) -> None:
+    migrate_onboarding_file()
+    root = notes_dir(settings)
+    if not root.is_dir():
+        return
+    for entry in root.iterdir():
+        if entry.is_dir() and (entry / "meta.json").is_file():
+            migrate_meeting_folder(entry, settings)
+    rebuild_meetings_index(settings)
 
 
 def stored_transcript_payload(meeting_id: str, storage_path: str = "") -> dict[str, Any]:
@@ -899,6 +1298,7 @@ def live_transcript_for(
     LIVE_CACHE["text"] = text
     if meeting_path and text:
         persist_live_transcript(Path(meeting_path), text)
+        write_transcript_jsonl(Path(meeting_path), turns_from_segments(segments))
     return text
 
 
@@ -934,7 +1334,7 @@ def meeting_search_text(folder: Path, title: str, notes: str, tags: list[str] | 
     for tag in tags or []:
         parts.append("#" + tag)
         parts.append(tag)
-    for name in ("summary.md", "transcript.md", "live-transcript.md"):
+    for name in ("summary.md", "transcript.md", "live-transcript.md", "transcript.jsonl"):
         parts.append(read_optional_text(folder / name))
     return "\n".join(part for part in parts if part).strip()
 
@@ -986,14 +1386,24 @@ def delete_meeting_folder(folder: Path, settings: Settings) -> tuple[bool, str]:
         return False, "Meeting not found"
     folder_path = str(folder.resolve())
     active = query_active_meeting()
-    if is_selected_meeting_recording(folder_path, active):
-        return False, "Stop transcribing before deleting this meeting"
-    if folder_path == RUNTIME.recording_meeting_path and (active or RUNTIME.recording_pending):
-        return False, "Stop transcribing before deleting this meeting"
+    recording_here = is_selected_meeting_recording(folder_path, active) or (
+        folder_path == RUNTIME.recording_meeting_path and (active or RUNTIME.recording_pending)
+    )
+    if recording_here:
+        if VOXTYPE_BIN:
+            try:
+                run([VOXTYPE_BIN, "meeting", "stop"], timeout=60)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        RUNTIME.recording_pending = False
+        RUNTIME.recording_meeting_path = ""
 
     voxtype_id = meeting_voxtype_id(folder)
     if voxtype_id and VOXTYPE_BIN:
-        run([VOXTYPE_BIN, "meeting", "delete", voxtype_id, "--force"], timeout=60)
+        try:
+            run([VOXTYPE_BIN, "meeting", "delete", voxtype_id, "--force"], timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     shutil.rmtree(folder)
     if RUNTIME.selected_meeting_path == folder_path:
@@ -1002,6 +1412,7 @@ def delete_meeting_folder(folder: Path, settings: Settings) -> tuple[bool, str]:
         RUNTIME.recording_meeting_path = ""
     invalidate_meetings_cache()
     invalidate_live_cache()
+    rebuild_meetings_index(settings)
     return True, ""
 
 
@@ -1040,6 +1451,7 @@ def cmd_delete_all_meetings(_payload: dict[str, Any]) -> None:
                 return
     RUNTIME.selected_meeting_path = ""
     invalidate_meetings_cache()
+    rebuild_meetings_index(settings)
     publish_state(settings)
 
 
@@ -1071,7 +1483,7 @@ def scan_saved_meetings(settings: Settings) -> list[dict[str, Any]]:
         title = str(meta.get("title") or entry.name)
         tags = normalize_tags(meta.get("tags"))
         status = str(meta.get("status") or "")
-        has_transcript = (entry / "transcript.md").is_file()
+        has_transcript = meeting_has_transcript(entry)
         is_completed = status == "completed" or has_transcript
         is_draft = not is_completed and status in {"draft", "recording"}
         is_recording = status == "recording" and not has_transcript
@@ -1159,11 +1571,13 @@ def run_agent_prompt(prompt: str, cwd: Path) -> str:
 
 def summary_prompt(settings: Settings) -> str:
     base = (
-        "You are a meeting notes assistant. Read transcript.md in this directory. "
-        "Write summary.md with: a short title line, key decisions, action items "
-        "(owner if known), and next steps. Use markdown headings and bullet lists. "
-        "Answer in the same language as the transcript. Output only the markdown "
-        "body to stdout; do not wrap in code fences."
+        "You are a meeting notes assistant. Prefer transcript.jsonl in this directory "
+        "(one spoken turn per line: speaker, t, text) when present; otherwise read "
+        "transcript.md. Write summary.md with: a short title line, key decisions, "
+        "action items (owner if known), and next steps. Use markdown headings and "
+        "bullet lists. Answer in the same language as the transcript. Output only "
+        "the markdown body to stdout; do not wrap in code fences. Do not treat "
+        "summary.md or insights.json as what was said."
     )
     extra = settings.summary_preprompt.strip()
     if extra:
@@ -1174,7 +1588,8 @@ def summary_prompt(settings: Settings) -> str:
 def live_summary_prompt(settings: Settings) -> str:
     base = (
         "You are a meeting notes assistant. The meeting is still in progress. "
-        "Read transcript.md in this directory (a partial live transcript). "
+        "Read transcript.jsonl in this directory when present (one turn per line), "
+        "otherwise transcript.md (a partial live transcript). "
         "Write an interim summary with: a short title line, key points so far, "
         "action items mentioned, and open questions. Use markdown headings and "
         "bullet lists. Answer in the same language as the transcript. Output only "
@@ -1198,10 +1613,11 @@ def refresh_live_summary(
         return
     payload = stored_transcript_payload(meeting_id, storage_path)
     transcript_text = segments_to_live_markdown(transcript_segments(payload))
-    if not transcript_text.strip():
+    if live_transcript_is_empty(transcript_text):
         return
     (folder / "transcript.md").write_text(transcript_text.strip() + "\n", encoding="utf-8")
     persist_live_transcript(folder, transcript_text)
+    write_transcript_jsonl(folder, turns_from_segments(transcript_segments(payload)))
     summary_text = run_agent_prompt(live_summary_prompt(settings), folder)
     (folder / "summary.md").write_text(summary_text.strip() + "\n", encoding="utf-8")
     invalidate_meetings_cache()
@@ -1351,9 +1767,11 @@ def cmd_open_agent(payload: dict[str, Any]) -> None:
 
 def ask_prompt(question: str) -> str:
     return (
-        "You are a meeting notes assistant. Read transcript.md, summary.md, and "
-        "notes.md in this directory when present. Answer the user's question using "
-        "only those notes. If the answer is not in the notes, say so briefly. "
+        "You are a meeting notes assistant. Prefer transcript.jsonl (speaker, t, text "
+        "per line) when present; otherwise read transcript.md. Then optionally notes.md. "
+        "Do not use summary.md or insights.json as the source of what was said unless "
+        "the user asked for the summary. Answer the user's question using only those "
+        "files. If the answer is not in the notes, say so briefly.\n"
         "Question:\n\n"
         f"{question.strip()}"
     )
@@ -1434,35 +1852,59 @@ def finalize_meeting(
         folder = meeting_folder_for(resolved_title, started_at, settings)
     apply_attendee_labels(voxtype_id)
     set_busy("Exporting transcript…")
-    transcript_text = voxtype_export(voxtype_id, folder / "transcript.md")
+    transcript_path = folder / "transcript.md"
+    transcript_text = voxtype_export(voxtype_id, transcript_path)
     if not transcript_text.strip():
-        transcript_path = folder / "transcript.md"
         if not transcript_path.is_file() or not transcript_path.read_text(encoding="utf-8").strip():
             transcript_path.write_text(
                 "_No speech was captured in this meeting._\n",
                 encoding="utf-8",
             )
+            transcript_text = transcript_path.read_text(encoding="utf-8")
+    elif transcript_path.is_file():
+        transcript_text = transcript_path.read_text(encoding="utf-8")
 
-    try:
-        set_busy("Generating summary…")
-        summary_text = run_agent_prompt(summary_prompt(settings), folder)
-        (folder / "summary.md").write_text(summary_text.strip() + "\n", encoding="utf-8")
-    except RuntimeError as exc:
-        (folder / "summary.error.txt").write_text(str(exc) + "\n", encoding="utf-8")
+    payload = meeting_transcript_payload(voxtype_id)
+    turns = turns_from_segments(transcript_segments(payload))
+    if not turns:
+        turns = turns_from_markdown(transcript_text)
+    write_transcript_jsonl(folder, turns)
 
-    meta = {
-        "title": resolved_title,
-        "startedAt": started_at,
-        "endedAt": ended_at,
-        "durationSecs": duration,
-        "voxtypeId": voxtype_id,
-        "status": "completed",
-        "tags": existing_tags,
-        "notesDir": str(folder),
-        "defaultAgent": read_default_agent(),
-        "exportedAt": now_ts(),
-    }
-    (folder / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    summary_path = folder / "summary.md"
+    error_path = folder / "summary.error.txt"
+    summary_text = ""
+    if live_transcript_is_empty(transcript_text) or not turns:
+        summary_path.write_text("", encoding="utf-8")
+        if error_path.is_file():
+            error_path.unlink()
+    else:
+        try:
+            set_busy("Generating summary…")
+            summary_text = run_agent_prompt(summary_prompt(settings), folder)
+            summary_path.write_text(summary_text.strip() + "\n", encoding="utf-8")
+            if error_path.is_file():
+                error_path.unlink()
+        except RuntimeError as exc:
+            summary_path.write_text("", encoding="utf-8")
+            error_path.write_text(str(exc) + "\n", encoding="utf-8")
+
+    write_insights_json(folder, turns, summary_text, existing_tags)
+    write_meeting_meta(
+        folder,
+        {
+            "title": resolved_title,
+            "startedAt": started_at,
+            "endedAt": ended_at,
+            "durationSecs": duration,
+            "voxtypeId": voxtype_id,
+            "status": "completed",
+            "tags": existing_tags,
+            "defaultAgent": read_default_agent(),
+            "exportedAt": now_ts(),
+        },
+        settings=settings,
+        turns=turns,
+    )
     invalidate_meetings_cache()
     invalidate_live_cache()
     reset_live_summary_tracking()
@@ -1632,16 +2074,21 @@ def cmd_create_meeting(payload: dict[str, Any]) -> None:
         return
     started_at = now_ts()
     folder = meeting_folder_for(title, started_at, settings)
-    meta = {
-        "title": title,
-        "startedAt": started_at,
-        "status": "draft",
-        "tags": tags,
-        "notesDir": str(folder),
-        "defaultAgent": read_default_agent(),
-        "createdAt": started_at,
-    }
-    (folder / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    write_meeting_meta(
+        folder,
+        {
+            "title": title,
+            "startedAt": started_at,
+            "status": "draft",
+            "tags": tags,
+            "defaultAgent": read_default_agent(),
+            "createdAt": started_at,
+            "participants": [],
+            "topics": [],
+        },
+        settings=settings,
+        turns=[],
+    )
     invalidate_meetings_cache()
     RUNTIME.selected_meeting_path = str(folder)
     publish_state(settings)
@@ -1758,7 +2205,10 @@ def _finalize_stop(
         wait_for_stopped_meeting(meeting_id, timeout=45.0)
     set_busy("Exporting transcript…")
     folder = finalize_meeting(meeting_id, title, settings, target_folder)
-    RUNTIME.selected_meeting_path = str(folder)
+    current = RUNTIME.selected_meeting_path.strip()
+    expected = str(target_folder) if target_folder else ""
+    if current == "" or current == expected:
+        RUNTIME.selected_meeting_path = str(folder)
     RUNTIME.recording_meeting_path = ""
     invalidate_live_cache()
     notify = shutil.which("omarchy-notification-send")
@@ -1789,17 +2239,7 @@ def cmd_select(payload: dict[str, Any]) -> None:
 
 
 def write_meeting_tags(folder: Path, tags: Any) -> None:
-    meta_path = folder / "meta.json"
-    meta: dict[str, Any] = {}
-    if meta_path.is_file():
-        try:
-            loaded = json.loads(meta_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                meta = loaded
-        except json.JSONDecodeError:
-            meta = {}
-    meta["tags"] = normalize_tags(tags)
-    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    write_meeting_meta(folder, {"tags": normalize_tags(tags), "topics": normalize_tags(tags)})
     invalidate_meetings_cache()
 
 
@@ -1896,6 +2336,7 @@ def cmd_reload_settings(payload: dict[str, Any]) -> None:
     if not ok_dir:
         emit({**build_state(settings), "ok": False, "error": dir_error})
         return
+    migrate_notes_root(settings)
     invalidate_meetings_cache()
     publish_state(settings)
 
@@ -1975,6 +2416,7 @@ def handle_command(payload: dict[str, Any]) -> None:
 
 
 def daemon_main() -> int:
+    migrate_notes_root(RUNTIME.settings)
     RUNTIME.poll_thread = threading.Thread(target=poll_loop, daemon=True)
     RUNTIME.poll_thread.start()
     publish_state()

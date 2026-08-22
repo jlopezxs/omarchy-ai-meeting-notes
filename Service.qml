@@ -123,7 +123,7 @@ Item {
   }
 
   function deleteMeeting(path) {
-    sendCommand({ cmd: "delete-meeting", path: path || state.meetingPath || "" })
+    sendCommand({ cmd: "delete-meeting", path: String(path || "").trim() })
   }
 
   function deleteAllMeetings() {

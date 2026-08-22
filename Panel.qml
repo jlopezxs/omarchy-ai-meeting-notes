@@ -59,7 +59,14 @@ Panel {
   readonly property bool recording: state.recording === true
   readonly property bool recordingThisMeeting: state.recordingThisMeeting === true
   readonly property string recordingMeetingPath: state.recordingMeetingPath || ""
+  readonly property string detailMeetingPath: Model.resolveDetailMeetingPath(
+    service ? service.state : null,
+    lastDetailPath,
+    detailMeeting,
+    setting("panelDetailPath", "")
+  )
   readonly property bool busy: state.busy === true
+  readonly property bool actionBusy: Model.actionBusy(state)
   readonly property int displayDurationSecs: recordingThisMeeting && state.startedAt > 0
     ? Math.max(state.durationSecs, nowSeconds - state.startedAt)
     : state.durationSecs
@@ -216,6 +223,14 @@ Panel {
 
   function openRecordingMeeting() {
     var path = Model.recordingOpenPath(root.state)
+    if (path === "") {
+      for (var i = 0; i < meetings.length; i++) {
+        if (meetings[i] && meetings[i].isRecording === true && meetings[i].path) {
+          path = String(meetings[i].path)
+          break
+        }
+      }
+    }
     if (path === "") return
     showDetail(path, {
       entry: Model.findMeetingByPath(meetings, path),
@@ -275,7 +290,7 @@ Panel {
   }
 
   function createMeeting() {
-    if (!service || busy) return
+    if (!service || actionBusy) return
     createdMeetingGuardPath = String(state.meetingPath || "")
     waitingForCreatedMeeting = true
     service.createMeeting(titleDraft.trim() || "Meeting")
@@ -329,16 +344,16 @@ Panel {
   }
 
   function askAgentWithMeeting() {
-    if (!service || busy) return
+    if (!service || actionBusy) return
     if (root.state.skillInstalled !== true) {
       root.installSkillInTerminal()
       return
     }
-    service.openAgentWithMeeting(root.state.meetingPath || "")
+    service.openAgentWithMeeting(root.detailMeetingPath || root.state.meetingPath || "")
   }
 
   function askAgentFromList() {
-    if (!service || busy) return
+    if (!service || actionBusy) return
     if (root.state.skillInstalled !== true) {
       root.installSkillInTerminal()
       return
@@ -347,12 +362,15 @@ Panel {
   }
 
   function deleteMeeting(path) {
-    var target = String(path || state.meetingPath || "").trim()
-    if (!service || busy || !target) return
-    if (!Model.canDeleteMeeting(state, target, recordingMeetingPath)) return
+    var target = Model.resolveDetailMeetingPath(
+      service ? service.state : null,
+      path || lastDetailPath,
+      detailMeeting,
+      setting("panelDetailPath", "")
+    )
+    if (!service || !target) return
     service.deleteMeeting(target)
-    if (screen === "detail" && (target === state.meetingPath || target === lastDetailPath))
-      showList()
+    if (screen === "detail") showList()
   }
 
   function copyCurrent(mode) {
@@ -645,7 +663,7 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             horizontalAlignment: Text.AlignLeft
-            text: Model.onboardingStepBody(onboardingStep, state.voxtypeReady)
+            text: Model.onboardingStepBody(onboardingStep, root.state.voxtypeReady)
           }
 
           Row {
@@ -738,7 +756,7 @@ Panel {
 
         PanelTextButton {
           Layout.fillWidth: true
-          visible: !state.voxtypeReady
+          visible: !root.state.voxtypeReady
           label: "Install Voxtype"
           tooltip: "Open the Voxtype installer"
           labelColor: root.foreground
@@ -749,7 +767,7 @@ Panel {
 
         PanelTextButton {
           Layout.fillWidth: true
-          visible: !state.voxtypeReady
+          visible: !root.state.voxtypeReady
           label: "Check again"
           tooltip: "Refresh Voxtype install status"
           labelColor: root.foreground
@@ -861,7 +879,7 @@ Panel {
           Layout.fillHeight: true
           text: root.titleDraft
           placeholderText: "Meeting title"
-          enabled: !busy && state.voxtypeReady
+          enabled: !root.actionBusy && root.state.voxtypeReady
           color: root.foreground
           placeholderTextColor: root.dim
           font.family: root.fontFamily
@@ -879,17 +897,9 @@ Panel {
           labelColor: root.foreground
           accentColor: Color.accent
           fontFamily: root.fontFamily
-          actionable: !busy && state.voxtypeReady && !recording
+          actionable: !root.actionBusy && root.state.voxtypeReady && !root.recording
           onActivated: root.createMeeting()
         }
-      }
-
-      PanelSectionHeader {
-        Layout.fillWidth: true
-        visible: root.recording
-        text: "NOW TRANSCRIBING"
-        foreground: root.urgent
-        fontFamily: root.fontFamily
       }
 
       CaptureStatusBox {
@@ -897,49 +907,19 @@ Panel {
         visible: root.recording
         iconText: "󰻃"
         title: "TRANSCRIBING"
+        titleTrailing: Model.recordingStatusDetail(root.state, root.nowSeconds)
         headline: Model.recordingBannerTitle(root.state)
         showDot: root.recording && !root.busy
-        detail: Model.recordingStatusDetail(root.state, root.nowSeconds)
+        showOpenStop: true
+        detail: ""
         footer: ""
         progress: -1
         foreground: root.foreground
         accent: root.urgent
         dim: root.dim
         fontFamily: root.fontFamily
-      }
-
-      RowLayout {
-        Layout.fillWidth: true
-        spacing: Style.spacing.controlGap
-        visible: root.recording
-
-        PanelTextButton {
-          Layout.fillWidth: true
-          label: "Open meeting"
-          tooltip: "Open the meeting being transcribed"
-          labelColor: root.urgent
-          accentColor: root.urgent
-          urgentColor: root.urgent
-          urgent: true
-          fontFamily: root.fontFamily
-          fontPixelSize: Style.font.bodySmall
-          labelBold: true
-          actionable: Model.recordingOpenPath(root.state) !== ""
-          onActivated: root.openRecordingMeeting()
-        }
-
-        PanelTextButton {
-          label: "Stop"
-          tooltip: "Stop transcribing and save"
-          labelColor: root.urgent
-          accentColor: root.urgent
-          urgentColor: root.urgent
-          urgent: true
-          fontFamily: root.fontFamily
-          fontPixelSize: Style.font.bodySmall
-          labelBold: true
-          onActivated: root.stopTranscription()
-        }
+        onOpenClicked: root.openRecordingMeeting()
+        onStopClicked: root.stopTranscription()
       }
 
       Text {
@@ -978,7 +958,7 @@ Panel {
           accentColor: Color.accent
           fontFamily: root.fontFamily
           fontPixelSize: Style.font.bodySmall
-          actionable: !root.busy
+          actionable: !root.actionBusy
           onActivated: root.askAgentFromList()
         }
       }
@@ -1442,31 +1422,34 @@ Panel {
           hoverColor: root.urgent
           fontFamily: root.fontFamily
           bordered: true
-          tooltipText: Model.deleteMeetingTooltip(state, state.meetingPath, recordingMeetingPath)
-          enabled: Model.canDeleteMeeting(state, state.meetingPath, recordingMeetingPath) && !busy
-          onClicked: root.deleteMeeting(state.meetingPath)
+          tooltipText: "Delete this meeting permanently"
+          onClicked: root.deleteMeeting(root.lastDetailPath || root.detailMeetingPath)
         }
       }
 
       RowLayout {
         Layout.fillWidth: true
         spacing: Style.spacing.controlGap
-        visible: Model.captureStatusVisible(state)
+        visible: Model.captureStatusVisible(root.state)
 
         CaptureStatusBox {
           Layout.fillWidth: true
           visible: recordingThisMeeting
           iconText: "󰻃"
-          title: "RECORDING STATUS"
-          headline: Model.recordingStatusHeadline(state)
-          showDot: recordingThisMeeting && !busy
-          detail: Model.recordingStatusDetail(state, nowSeconds)
-          footer: Model.recordingStatusFooter(state)
+          title: "TRANSCRIBING"
+          titleTrailing: Model.recordingStatusDetail(root.state, nowSeconds)
+          headline: Model.recordingBannerTitle(root.state)
+          showDot: recordingThisMeeting && !root.busy
+          showOpenStop: true
+          showOpenAction: false
+          detail: ""
+          footer: ""
           progress: -1
           foreground: root.foreground
           accent: root.urgent
           dim: root.dim
           fontFamily: root.fontFamily
+          onStopClicked: root.stopTranscription()
         }
 
         CaptureStatusBox {
@@ -1499,26 +1482,8 @@ Panel {
           labelColor: root.foreground
           accentColor: Color.accent
           fontFamily: root.fontFamily
-          actionable: !busy && state.voxtypeReady
+          actionable: !root.busy && root.state.voxtypeReady
           onActivated: root.startTranscription()
-        }
-      }
-
-      RowLayout {
-        Layout.fillWidth: true
-        spacing: Style.spacing.controlGap
-        visible: detailActive && recordingThisMeeting
-
-        PanelTextButton {
-          Layout.fillWidth: true
-          label: "Stop transcribing"
-          tooltip: "Stop capture and save the meeting"
-          labelBold: true
-          labelColor: root.urgent
-          accentColor: root.urgent
-          urgentColor: root.urgent
-          fontFamily: root.fontFamily
-          onActivated: root.stopTranscription()
         }
       }
 
@@ -1560,7 +1525,7 @@ Panel {
       RowLayout {
         Layout.fillWidth: true
         spacing: Style.spacing.controlGap
-        visible: detailFinished
+        visible: root.detailFinished || Model.canAskAgent(root.state)
 
         PanelTextButton {
           Layout.fillWidth: true
@@ -1570,7 +1535,7 @@ Panel {
           labelColor: root.foreground
           accentColor: Color.accent
           fontFamily: root.fontFamily
-          actionable: !root.busy && Model.canAskAgent(root.state)
+          actionable: !root.actionBusy && Model.canAskAgent(root.state)
           onActivated: root.askAgentWithMeeting()
         }
 
@@ -1763,24 +1728,67 @@ Panel {
 
       RowLayout {
         Layout.fillWidth: true
+        spacing: Style.spacing.controlGap
 
-        PanelActionButton {
-          iconText: "󰁍"
-          foreground: root.foreground
-          hoverColor: root.foreground
-          fontFamily: root.fontFamily
-          bordered: true
-          tooltipText: "Back to meetings list"
-          onClicked: root.showList()
-        }
-
-        Text {
-          text: "Settings"
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.title
-          font.bold: true
+        Item {
           Layout.fillWidth: true
+          Layout.preferredHeight: Math.max(settingsHeroIcon.height, settingsHeroLabels.implicitHeight)
+
+          OpticalGlyph {
+            id: settingsHeroIcon
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(36)
+            height: Style.space(36)
+            text: Model.settingsBackIcon()
+            fontFamily: root.fontFamily
+            fontSize: Style.font.display
+            color: root.foreground
+          }
+
+          Column {
+            id: settingsHeroLabels
+            anchors.left: settingsHeroIcon.right
+            anchors.leftMargin: Style.space(14)
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(2)
+
+            Text {
+              text: "Settings"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              elide: Text.ElideRight
+              width: parent.width
+            }
+
+            Text {
+              text: Model.settingsHeroSubtitle()
+              color: Qt.darker(root.foreground, 1.4)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+              elide: Text.ElideRight
+              width: parent.width
+            }
+          }
+
+          MouseArea {
+            id: settingsBackHit
+            anchors.fill: settingsHeroIcon
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.showList()
+          }
+
+          PanelToolTip {
+            visible: settingsBackHit.containsMouse
+            text: "Back to meetings list"
+            fontFamily: root.fontFamily
+          }
         }
       }
 
@@ -1798,7 +1806,7 @@ Panel {
         TextField {
           Layout.fillWidth: true
           text: setting("notesDir", "")
-          placeholderText: state.notesDir || "~/.local/state/omarchy/meetings"
+          placeholderText: root.state.notesDir || "~/.local/state/omarchy/meetings"
           foreground: root.foreground
           accent: Color.accent
           font.family: root.fontFamily
@@ -1998,27 +2006,18 @@ Panel {
 
       Text {
         Layout.fillWidth: true
-        wrapMode: Text.WordWrap
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        text: Model.skillInstallStatusText(state.skillInstalled === true)
-      }
-
-      Text {
-        Layout.fillWidth: true
         visible: busy
         wrapMode: Text.WordWrap
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
-        text: String(state.busyLabel || "Working…")
+        text: String(root.state.busyLabel || "Working…")
       }
 
       PanelTextButton {
         Layout.fillWidth: true
-        label: Model.skillInstallLabel(state.skillInstalled === true)
-        tooltip: Model.skillInstallTooltip(state.skillInstalled === true)
+        label: Model.skillInstallLabel(root.state.skillInstalled === true)
+        tooltip: Model.skillInstallTooltip(root.state.skillInstalled === true)
         labelBold: true
         labelColor: root.foreground
         accentColor: Color.accent
@@ -2029,21 +2028,12 @@ Panel {
 
       Text {
         Layout.fillWidth: true
-        wrapMode: Text.WordWrap
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        text: Model.skillGithubInstallCommand()
-      }
-
-      Text {
-        Layout.fillWidth: true
-        visible: String(state.skillInstallError || "") !== ""
+        visible: String(root.state.skillInstallError || "") !== ""
         wrapMode: Text.WordWrap
         color: root.urgent
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
-        text: Model.formatUserError(state.skillInstallError)
+        text: Model.formatUserError(root.state.skillInstallError)
       }
 
       PanelSectionHeader {

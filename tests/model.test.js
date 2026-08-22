@@ -123,7 +123,8 @@ assert.strictEqual(Model.skillInstallStatusText(false), "Not installed")
 assert.strictEqual(Model.skillInstallStatusText(true), "Already installed")
 assert.ok(Model.skillInstallTooltip(false).indexOf("terminal") >= 0)
 assert.ok(Model.skillInstallTooltip(true).indexOf("terminal") >= 0)
-assert.ok(Model.skillGithubInstallCommand().indexOf("jlopezxs/omarchy-meetings-notepad-ai") >= 0)
+assert.ok(Model.skillGithubInstallCommand().indexOf("jlopezxs/omarchy-ai-meetings-notes") >= 0)
+assert.ok(Model.skillGithubInstallCommand().indexOf("--skill omarchy-meetings") >= 0)
 assert.ok(Model.skillGithubInstallCommand().indexOf(" -g") >= 0)
 assert.ok(Model.skillGithubInstallCommand().indexOf("--yes") >= 0)
 assert.strictEqual(Model.defaultWidgetSettings().listMeetingsMax, 5)
@@ -150,7 +151,10 @@ assert.strictEqual(Model.normalizeBool("true", false), true)
 assert.strictEqual(Model.normalizeBool("false", true), false)
 assert.strictEqual(Model.normalizeBool(undefined, true), true)
 
-assert.strictEqual(Model.meetingIcon(), "󰎞")
+assert.strictEqual(Model.meetingIcon(), "󱘓")
+assert.strictEqual(Model.panelHeroSubtitle(), "RECORD · TRANSCRIBE · SUMMARIZE")
+assert.strictEqual(Model.settingsBackIcon(), "󰁍")
+assert.strictEqual(Model.settingsHeroSubtitle(), "FOLDER · LANGUAGE · SKILL · DATA")
 assert.strictEqual(Model.liveTranscriptPreview({ liveTranscript: " **Me** hello" }), "**Me** hello")
 assert.strictEqual(Model.parseState(JSON.stringify({ speakerCount: 3 })).speakerCount, 3)
 
@@ -181,6 +185,20 @@ assert.strictEqual(
   Model.canDeleteMeeting({ recording: true, recordingMeetingPath: "/tmp/a" }, "/tmp/a", "/tmp/a"),
   false
 )
+assert.strictEqual(
+  Model.resolveDetailMeetingPath({ meetingPath: "/tmp/state" }, "/tmp/open", { path: "/tmp/entry" }, "/tmp/saved"),
+  "/tmp/open"
+)
+assert.strictEqual(
+  Model.resolveDetailMeetingPath({ meetingPath: "" }, "", { path: "/tmp/entry" }, "/tmp/saved"),
+  "/tmp/entry"
+)
+assert.strictEqual(
+  Model.resolveDetailMeetingPath({ meetingPath: "/tmp/state" }, "", null, ""),
+  "/tmp/state"
+)
+assert.strictEqual(Model.resolveDetailMeetingPath(null, "", null, "/tmp/saved"), "/tmp/saved")
+assert.strictEqual(Model.resolveDetailMeetingPath("", "", null, ""), "")
 
 assert.strictEqual(Model.captureStatusVisible({ recordingThisMeeting: true }), true)
 assert.strictEqual(Model.captureStatusVisible({ busy: true, busyLabel: "Saving meeting…" }), true)
@@ -191,6 +209,9 @@ assert.strictEqual(Model.transcriptStatusHeadline({ busy: true, busyLabel: "Gene
 assert.strictEqual(Model.isGeneratingSummary({ busy: true, busyLabel: "Generating summary…" }), true)
 assert.strictEqual(Model.isGeneratingSummary({ summaryRefreshing: true }), true)
 assert.strictEqual(Model.isGeneratingSummary({ busy: true, busyLabel: "Exporting transcript…" }), false)
+assert.strictEqual(Model.actionBusy({ busy: true, busyLabel: "Generating summary…" }), false)
+assert.strictEqual(Model.actionBusy({ busy: true, busyLabel: "Saving meeting…" }), true)
+assert.strictEqual(Model.actionBusy({ busy: false }), false)
 assert.strictEqual(Model.summaryLoadingVisible({ busy: true, busyLabel: "Generating summary…", summary: "" }, "summary"), true)
 assert.strictEqual(Model.summaryLoadingVisible({ busy: true, busyLabel: "Generating summary…", summary: "Done" }, "summary"), false)
 assert.strictEqual(Model.summaryLoadingVisible({ busy: true, busyLabel: "Generating summary…" }, "transcript"), false)
@@ -199,6 +220,16 @@ assert.strictEqual(Model.summaryLoadingCaption({ busy: true, busyLabel: "Generat
 assert.ok(Model.transcriptProgressRatio({ busy: true, busyLabel: "Exporting transcript…" }, 0, 30) > 0.5)
 assert.strictEqual(Model.recordingStatusDetail({ recordingThisMeeting: true, startedAt: 100, durationSecs: 0 }, 173), "01:13")
 assert.strictEqual(Model.recordingOpenPath({ recordingMeetingPath: "/tmp/live", meetingPath: "/tmp/other" }), "/tmp/live")
+assert.strictEqual(Model.recordingOpenPath({
+  recordingMeetingPath: "",
+  meetingPath: "",
+  meetings: [{ path: "/tmp/rec", isRecording: true }]
+}), "/tmp/rec")
+assert.strictEqual(Model.canOpenMeetingDetail({
+  meetingPath: "",
+  recordingMeetingPath: "/tmp/live",
+  meetings: []
+}, "/tmp/live"), true)
 assert.strictEqual(Model.recordingBannerTitle({
   recordingMeetingPath: "/tmp/live",
   title: "Selected",
@@ -212,6 +243,8 @@ assert.strictEqual(Model.canAskAgent({ meetingFinished: true, skillInstalled: fa
 assert.strictEqual(Model.canAskAgent({ meetingFinished: true, skillInstalled: true, defaultAgent: "" }), true)
 assert.strictEqual(Model.canAskAgent({ meetingFinished: true, skillInstalled: true, defaultAgent: "agent" }), true)
 assert.strictEqual(Model.canAskAgent({ meetingFinished: false }), false)
+assert.strictEqual(Model.canAskAgent({ busy: true, busyLabel: "Generating summary…" }), true)
+assert.strictEqual(Model.canAskAgent({ recording: true, summaryRefreshing: true }), false)
 assert.ok(Model.askAgentLaunchPrompt({ title: "Standup", startedAt: 0 }).indexOf("/omarchy-meetings Standup") === 0)
 assert.strictEqual(Model.askAgentSkillPrompt(), "/omarchy-meetings\n\n")
 assert.ok(Model.askAgentListTooltip({ skillInstalled: false }).indexOf("/omarchy-meetings") >= 0)

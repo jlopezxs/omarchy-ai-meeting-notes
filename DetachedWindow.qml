@@ -82,6 +82,14 @@ Item {
       Qt.callLater(function() { hostWidget.open() })
   }
 
+  function deleteCurrentMeeting() {
+    if (!service) return
+    var path = String((service.state && service.state.meetingPath) || "").trim()
+    if (!path) return
+    service.deleteMeeting(path)
+    hide()
+  }
+
   onStateChanged: {
     if (state.meetingPath)
       notesDraft = state.notes || notesDraft
@@ -165,6 +173,16 @@ Item {
           tooltipText: "Dock back into the bar panel"
           onClicked: root.dock()
         }
+
+        PanelActionButton {
+          iconText: "󰆴"
+          foreground: root.urgent
+          hoverColor: root.urgent
+          fontFamily: root.fontFamily
+          bordered: true
+          tooltipText: "Delete this meeting permanently"
+          onClicked: root.deleteCurrentMeeting()
+        }
       }
 
       RowLayout {
@@ -176,16 +194,20 @@ Item {
           Layout.fillWidth: true
           visible: recordingThisMeeting
           iconText: "󰻃"
-          title: "RECORDING STATUS"
-          headline: Model.recordingStatusHeadline(state)
+          title: "TRANSCRIBING"
+          titleTrailing: Model.recordingStatusDetail(state, nowSeconds)
+          headline: Model.recordingBannerTitle(state)
           showDot: recordingThisMeeting && !busy
-          detail: Model.recordingStatusDetail(state, nowSeconds)
-          footer: Model.recordingStatusFooter(state)
+          showOpenStop: true
+          showOpenAction: false
+          detail: ""
+          footer: ""
           progress: -1
           foreground: root.foreground
           accent: root.urgent
           dim: root.dim
           fontFamily: root.fontFamily
+          onStopClicked: root.stopTranscription()
         }
 
         CaptureStatusBox {
@@ -208,25 +230,10 @@ Item {
       RowLayout {
         Layout.fillWidth: true
         spacing: Style.spacing.controlGap
-        visible: !!state.meetingPath
+        visible: !!state.meetingPath && !recordingThisMeeting && !state.meetingFinished && !busy
 
         PanelTextButton {
           Layout.fillWidth: true
-          visible: recordingThisMeeting
-          label: "Stop transcribing"
-          tooltip: "Stop capture and save the meeting"
-          labelBold: true
-          labelColor: root.urgent
-          accentColor: root.urgent
-          urgentColor: root.urgent
-          fontFamily: root.fontFamily
-          fontPixelSize: Style.font.bodySmall
-          onActivated: root.stopTranscription()
-        }
-
-        PanelTextButton {
-          Layout.fillWidth: true
-          visible: !recordingThisMeeting && !state.meetingFinished && !busy
           label: "Start transcribing"
           tooltip: "Capture audio and transcribe live"
           labelBold: true

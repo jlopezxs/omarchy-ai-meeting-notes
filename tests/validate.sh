@@ -16,6 +16,8 @@ text = skill.read_text(encoding="utf-8")
 assert text.startswith("---"), "SKILL.md must start with YAML frontmatter"
 assert "name: omarchy-meetings" in text
 assert "description:" in text
+assert "index.jsonl" in text
+assert "transcript.jsonl" in text
 assert "meta.json" in text
 assert "transcript.md" in text
 print("skill: ok")
