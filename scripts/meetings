@@ -34,6 +34,7 @@ SKILL_INSTALL_TIMEOUT_SEC = 180
 SKILL_MARKER_PATHS = (
     Path.home() / ".agents" / "skills" / SKILL_NAME / "SKILL.md",
     Path.home() / ".cursor" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".cursor" / "skills-cursor" / SKILL_NAME / "SKILL.md",
     Path.home() / ".claude" / "skills" / SKILL_NAME / "SKILL.md",
     Path.home() / ".codex" / "skills" / SKILL_NAME / "SKILL.md",
     Path.home() / ".opencode" / "skills" / SKILL_NAME / "SKILL.md",
@@ -210,6 +211,14 @@ def mark_onboarding_complete() -> None:
     )
 
 
+def reset_onboarding() -> None:
+    try:
+        if ONBOARDING_FILE.is_file():
+            ONBOARDING_FILE.unlink()
+    except OSError:
+        pass
+
+
 def skill_dir() -> Path:
     return PLUGIN_ROOT / "skills" / SKILL_NAME
 
@@ -224,9 +233,31 @@ def skill_install_error_text(stdout: str, stderr: str) -> str:
 
 
 def skill_is_installed() -> bool:
-    for marker in SKILL_MARKER_PATHS:
-        if marker.is_file() or marker.is_symlink():
-            return True
+    candidates: list[Path] = list(SKILL_MARKER_PATHS)
+    home = Path.home()
+    try:
+        for child in home.iterdir():
+            candidates.append(child / "skills" / SKILL_NAME / "SKILL.md")
+            candidates.append(child / "agent" / "skills" / SKILL_NAME / "SKILL.md")
+            candidates.append(child / "data" / "skills" / SKILL_NAME / "SKILL.md")
+        config = home / ".config"
+        if config.is_dir():
+            for child in config.iterdir():
+                candidates.append(child / "skills" / SKILL_NAME / "SKILL.md")
+                candidates.append(child / "harness" / "skills" / SKILL_NAME / "SKILL.md")
+    except OSError:
+        pass
+    seen: set[str] = set()
+    for marker in candidates:
+        key = str(marker)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if marker.is_file() or marker.is_symlink():
+                return True
+        except OSError:
+            continue
     return False
 
 
@@ -990,6 +1021,33 @@ def cmd_delete_meeting(payload: dict[str, Any]) -> None:
     publish_state(settings)
 
 
+def cmd_delete_all_meetings(_payload: dict[str, Any]) -> None:
+    settings = RUNTIME.settings
+    active = query_active_meeting()
+    if active or RUNTIME.recording_pending:
+        emit({**build_state(settings), "ok": False, "error": "Stop transcribing before deleting all meetings"})
+        return
+    root = notes_dir(settings)
+    if root.is_dir():
+        for entry in list(root.iterdir()):
+            if not entry.is_dir():
+                continue
+            if not is_meeting_folder(entry, settings):
+                continue
+            ok, message = delete_meeting_folder(entry, settings)
+            if not ok:
+                emit({**build_state(settings), "ok": False, "error": message})
+                return
+    RUNTIME.selected_meeting_path = ""
+    invalidate_meetings_cache()
+    publish_state(settings)
+
+
+def cmd_reset_settings(_payload: dict[str, Any]) -> None:
+    reset_onboarding()
+    publish_state()
+
+
 def scan_saved_meetings(settings: Settings) -> list[dict[str, Any]]:
     root = notes_dir(settings)
     if not root.is_dir():
@@ -1227,12 +1285,14 @@ def ask_agent_launch_prompt(title: str, started_at: int) -> str:
     return line + "\n\n"
 
 
-def launch_agent_with_meeting(folder: Path) -> tuple[bool, str]:
+def ask_agent_skill_prompt() -> str:
+    return "/omarchy-meetings\n\n"
+
+
+def launch_agent_with_prompt(prompt_body: str, prompt_path: Path) -> tuple[bool, str]:
     if not read_default_agent():
         return False, "Configure default agent: omarchy default agent <name>"
-    files = read_meeting_files(folder)
-    prompt_body = ask_agent_launch_prompt(files["title"], int(files["startedAt"] or 0))
-    prompt_path = folder / ".agent-launch-prompt.md"
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt_body, encoding="utf-8")
     quoted_path = shlex.quote(str(prompt_path))
     agent_name = read_default_agent()
@@ -1255,10 +1315,28 @@ def launch_agent_with_meeting(folder: Path) -> tuple[bool, str]:
     return True, ""
 
 
+def launch_agent_with_meeting(folder: Path) -> tuple[bool, str]:
+    files = read_meeting_files(folder)
+    prompt_body = ask_agent_launch_prompt(files["title"], int(files["startedAt"] or 0))
+    return launch_agent_with_prompt(prompt_body, folder / ".agent-launch-prompt.md")
+
+
+def launch_agent_with_skill() -> tuple[bool, str]:
+    return launch_agent_with_prompt(
+        ask_agent_skill_prompt(),
+        notes_dir(RUNTIME.settings) / ".agent-launch-prompt.md",
+    )
+
+
 def cmd_open_agent(payload: dict[str, Any]) -> None:
-    path = str(payload.get("path") or RUNTIME.selected_meeting_path or "").strip()
-    if not path:
-        emit({**build_state(), "ok": False, "error": "Select a meeting first"})
+    skill_only = payload.get("skillOnly") is True
+    path = str(payload.get("path") or "").strip()
+    if skill_only or path == "":
+        ok, message = launch_agent_with_skill()
+        if not ok:
+            emit({**build_state(), "ok": False, "error": message})
+            return
+        publish_state()
         return
     folder = Path(path)
     if not folder.is_dir():
@@ -1872,6 +1950,8 @@ def handle_command(payload: dict[str, Any]) -> None:
         cmd_open_agent(payload)
     elif cmd == "delete-meeting":
         cmd_delete_meeting(payload)
+    elif cmd == "delete-all-meetings":
+        cmd_delete_all_meetings(payload)
     elif cmd == "refresh":
         publish_state()
     elif cmd == "open-notes-dir":
@@ -1886,6 +1966,8 @@ def handle_command(payload: dict[str, Any]) -> None:
     elif cmd == "complete-onboarding":
         mark_onboarding_complete()
         publish_state()
+    elif cmd == "reset-settings":
+        cmd_reset_settings(payload)
     elif cmd == "install-skill":
         cmd_install_skill(payload)
     else:

@@ -17,8 +17,7 @@ assert text.startswith("---"), "SKILL.md must start with YAML frontmatter"
 assert "name: omarchy-meetings" in text
 assert "description:" in text
 assert "meta.json" in text
-assert "`tags`" in text or '"tags"' in text
-assert "standup" in text
+assert "transcript.md" in text
 print("skill: ok")
 PY
 

@@ -1,6 +1,6 @@
 // Pure helpers for the meetings notepad panel. No QML types.
 
-var MEETING_ICON = ""
+var MEETING_ICON = "󰎞" // nf-md-note-text
 
 function meetingIcon() {
   return MEETING_ICON
@@ -10,6 +10,89 @@ function elide(text, max) {
   var value = String(text || "").replace(/\s+/g, " ").trim()
   if (max === undefined) max = 140
   return value.length > max ? value.substring(0, max - 1) + "…" : value
+}
+
+function compactMarkdownHeadings(markdown) {
+  return String(markdown || "").replace(/^(#{1,6})(\s+)/gm, function(_, hashes, space) {
+    var n = Math.min(6, hashes.length + 2)
+    var out = ""
+    for (var i = 0; i < n; i++) out += "#"
+    return out + space
+  })
+}
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+}
+
+function inlineMarkdownToHtml(text) {
+  var html = escapeHtml(text)
+  html = html.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+  html = html.replace(/\*(.+?)\*/g, "<i>$1</i>")
+  html = html.replace(/`(.+?)`/g, "<code>$1</code>")
+  return html
+}
+
+function headingStyle(level, isFirst, headingPx, bodyPx) {
+  var size = level <= 1 ? headingPx : bodyPx
+  var top = isFirst ? 8 : (level <= 1 ? 18 : 16)
+  var bottom = level <= 1 ? 10 : 8
+  return "margin-top:" + top + "px;margin-bottom:" + bottom + "px;font-size:" + size + "px;"
+}
+
+function markdownToPreviewHtml(markdown, headingPx, bodyPx) {
+  var hPx = Math.max(1, Math.floor(Number(headingPx) || 13))
+  var bPx = Math.max(1, Math.floor(Number(bodyPx) || 11))
+  var lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n")
+  var html = []
+  var firstHeading = true
+  var i = 0
+  while (i < lines.length) {
+    var line = lines[i]
+    var heading = /^(#{1,6})\s+(.*)$/.exec(line)
+    if (heading) {
+      html.push(
+        "<p style=\"" + headingStyle(heading[1].length, firstHeading, hPx, bPx) + "\"><b>" +
+        inlineMarkdownToHtml(heading[2]) +
+        "</b></p>"
+      )
+      firstHeading = false
+      i += 1
+      continue
+    }
+    var unordered = /^\s*[-*]\s+(.*)$/.exec(line)
+    var ordered = /^\s*(\d+)\.\s+(.*)$/.exec(line)
+    if (unordered || ordered) {
+      while (i < lines.length) {
+        unordered = /^\s*[-*]\s+(.*)$/.exec(lines[i])
+        ordered = /^\s*(\d+)\.\s+(.*)$/.exec(lines[i])
+        if (!unordered && !ordered) break
+        var marker = unordered ? "•" : (ordered[1] + ".")
+        var item = unordered ? unordered[1] : ordered[2]
+        html.push(
+          "<p style=\"margin-top:2px;margin-bottom:2px;margin-left:10px;font-size:" + bPx + "px;\">" +
+          marker + " " + inlineMarkdownToHtml(item) +
+          "</p>"
+        )
+        i += 1
+      }
+      continue
+    }
+    if (String(line).trim() === "") {
+      i += 1
+      continue
+    }
+    html.push(
+      "<p style=\"margin-top:4px;margin-bottom:4px;font-size:" + bPx + "px;\">" +
+      inlineMarkdownToHtml(line) +
+      "</p>"
+    )
+    i += 1
+  }
+  return html.join("")
 }
 
 function formatDuration(seconds) {
@@ -215,7 +298,7 @@ function barBadgeText(state) {
 
 function barTooltip(state) {
   if (!state || typeof state !== "object") return "Meetings — notes from audio"
-  if (state.recording) return "Transcribing — click to open, middle-click to stop"
+  if (state.recording) return "Transcribing — click to open"
   if (state.busy) return String(state.busyLabel || "Working…")
   return "Open meeting notepad"
 }
@@ -292,93 +375,11 @@ function normalizeTags(value) {
   return out
 }
 
-function formatTagsInput(tags) {
-  return normalizeTags(tags).join(", ")
-}
-
-function formatTagsPreview(tags) {
-  var list = normalizeTags(tags)
-  if (list.length === 0) return ""
-  var labels = []
-  for (var i = 0; i < list.length; i++) labels.push("#" + list[i])
-  return labels.join(" ")
-}
-
-function tagChipLabel(tag) {
-  var value = normalizeTag(tag)
-  return value ? "#" + value : ""
-}
-
-function meetingTags(item) {
-  if (!item || typeof item !== "object") return []
-  return normalizeTags(item.tags)
-}
-
-function meetingHasTag(item, tag) {
-  var needle = normalizeTag(tag)
-  if (!needle) return false
-  var tags = meetingTags(item)
-  for (var i = 0; i < tags.length; i++) if (tags[i] === needle) return true
-  return false
-}
-
-function uniqueMeetingTags(meetings) {
-  var list = Array.isArray(meetings) ? meetings : []
-  var seen = {}
-  var out = []
-  for (var i = 0; i < list.length; i++) {
-    var tags = meetingTags(list[i])
-    for (var j = 0; j < tags.length; j++) {
-      if (seen[tags[j]]) continue
-      seen[tags[j]] = true
-      out.push(tags[j])
-    }
-  }
-  out.sort()
-  return out
-}
-
-function isTagFilterQuery(query) {
-  return String(query || "").trim().charAt(0) === "#"
-}
-
-function tagsEqual(left, right) {
-  var a = normalizeTags(left)
-  var b = normalizeTags(right)
-  if (a.length !== b.length) return false
-  for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
-  return true
-}
-
-function toggleTagFilterQuery(currentQuery, tag) {
-  var slug = normalizeTag(tag)
-  if (!slug) return String(currentQuery || "").trim()
-  var current = String(currentQuery || "").trim()
-  if (isTagFilterQuery(current) && normalizeTag(current) === slug) return ""
-  return "#" + slug
-}
-
-function addMeetingTag(tags, tag) {
-  return normalizeTags(normalizeTags(tags).concat([tag]))
-}
-
-function removeMeetingTag(tags, tag) {
-  var needle = normalizeTag(tag)
-  var out = []
-  var current = normalizeTags(tags)
-  for (var i = 0; i < current.length; i++) if (current[i] !== needle) out.push(current[i])
-  return out
-}
-
 function meetingSearchHaystack(item) {
   if (!item) return ""
-  var tags = meetingTags(item)
-  var tagText = ""
-  for (var i = 0; i < tags.length; i++) tagText += tags[i] + " #" + tags[i] + " "
   return (
     String(item.title || "") + "\n" +
     String(item.id || "") + "\n" +
-    tagText + "\n" +
     String(item.searchText || "")
   ).toLowerCase()
 }
@@ -388,16 +389,11 @@ function filterMeetings(meetings, query) {
   var raw = String(query || "").trim()
   if (raw === "") return list
   var needle = raw.toLowerCase()
-  var tagNeedle = raw.charAt(0) === "#" ? normalizeTag(raw) : ""
   var out = []
   for (var i = 0; i < list.length; i++) {
     var item = list[i]
     if (!item) continue
-    if (tagNeedle) {
-      if (meetingHasTag(item, tagNeedle)) out.push(item)
-      continue
-    }
-    if (meetingHasTag(item, needle) || meetingSearchHaystack(item).indexOf(needle) >= 0)
+    if (meetingSearchHaystack(item).indexOf(needle) >= 0)
       out.push(item)
   }
   return out
@@ -409,6 +405,63 @@ function meetingsForList(meetings, query, max, page) {
   var safePage = normalizeListPage(page, filtered.length, size)
   var start = safePage * size
   return filtered.slice(start, start + size)
+}
+
+function startOfLocalDay(timestamp) {
+  var ts = Number(timestamp) || 0
+  if (ts <= 0) return 0
+  var d = new Date(ts * 1000)
+  d.setHours(0, 0, 0, 0)
+  return Math.floor(d.getTime() / 1000)
+}
+
+function formatDurationShort(seconds) {
+  var total = Math.max(0, Math.floor(Number(seconds) || 0))
+  if (total < 60) return String(total) + "s"
+  var h = Math.floor(total / 3600)
+  var m = Math.floor((total % 3600) / 60)
+  if (h > 0) return m > 0 ? String(h) + "h " + String(m) + "m" : String(h) + "h"
+  return String(m) + "m"
+}
+
+function formatPerDay(value) {
+  var n = Number(value) || 0
+  if (n <= 0) return "0"
+  if (n >= 10) return String(Math.round(n))
+  var rounded = Math.round(n * 10) / 10
+  return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(1)
+}
+
+function meetingStats(meetings, nowSeconds) {
+  var list = Array.isArray(meetings) ? meetings : []
+  var count = list.length
+  var totalSecs = 0
+  var withDuration = 0
+  var earliest = 0
+  for (var i = 0; i < list.length; i++) {
+    var dur = Number(list[i] && list[i].durationSecs) || 0
+    if (dur > 0) {
+      totalSecs += dur
+      withDuration += 1
+    }
+    var started = Number(list[i] && list[i].startedAt) || 0
+    if (started > 0 && (earliest === 0 || started < earliest)) earliest = started
+  }
+  var avgSecs = withDuration > 0 ? Math.round(totalSecs / withDuration) : 0
+  var now = Number(nowSeconds) || Math.floor(Date.now() / 1000)
+  var daySpan = 1
+  if (earliest > 0) {
+    var startDay = startOfLocalDay(earliest)
+    var nowDay = startOfLocalDay(now)
+    daySpan = Math.max(1, Math.round((nowDay - startDay) / 86400) + 1)
+  }
+  return {
+    count: count,
+    countLabel: String(count),
+    totalLabel: formatDurationShort(totalSecs),
+    avgLabel: formatDurationShort(avgSecs),
+    perDayLabel: formatPerDay(count / daySpan)
+  }
 }
 
 var LIST_MEETINGS_DEFAULT = 5
@@ -498,12 +551,6 @@ function meetingListSubtitle(entry, nowSeconds) {
   var parts = []
   if (entry.startedAt > 0) parts.push(formatRelativeTime(entry.startedAt, nowSeconds))
   if (entry.durationSecs > 0) parts.push(formatDuration(entry.durationSecs))
-  var userTags = meetingTags(entry)
-  if (userTags.length > 0) {
-    var labels = []
-    for (var t = 0; t < userTags.length; t++) labels.push("#" + userTags[t])
-    parts.push(labels.join(" "))
-  }
   var tags = []
   if (entry.hasNotes) tags.push("notes")
   if (entry.hasSummary) tags.push("summary")
@@ -556,7 +603,7 @@ function onboardingStepTitle(step) {
 function onboardingStepBody(step, voxtypeReady) {
   var index = Number(step) || 0
   if (index === 0) {
-    return "Capture meeting audio from your microphone and computer. Get a live transcript while you talk, then an AI summary and searchable notes — without inviting a bot to your call."
+    return "Capture meeting audio from your microphone and computer. Get a transcript, an AI summary, and searchable notes — without inviting a bot to your call."
   }
   if (index === 1) {
     return "Voxtype records system audio and your mic through PipeWire, transcribes speech in chunks with Whisper, and saves everything as Markdown on your machine. Summaries use your default Omarchy agent."
@@ -598,25 +645,40 @@ function skillGithubSource() {
 }
 
 function skillGithubInstallCommand() {
-  return "npx skills add " + SKILL_GITHUB_SOURCE + " -g"
+  return "npx --yes skills add " + SKILL_GITHUB_SOURCE + " -g --skill omarchy-meetings --agent '*' -y"
 }
 
 function skillInstallLabel(installed) {
-  return installed ? "Reinstall globally" : "Install globally"
+  return installed ? "Already installed" : "Install globally"
 }
 
 function skillInstallTooltip(installed) {
   if (installed)
-    return "Reinstall /omarchy-meetings globally for every detected agent"
-  return "Install /omarchy-meetings globally so any agent can read your meetings"
+    return "Opens a terminal to reinstall /omarchy-meetings globally"
+  return "Opens a terminal to install /omarchy-meetings globally so any agent can read your meetings"
 }
 
 function skillInstallStatusText(installed) {
-  return installed ? "Installed globally for detected agents" : "Not installed"
+  return installed ? "Already installed" : "Not installed"
 }
 
 function skillInstallHelpText() {
   return "Installs /omarchy-meetings globally via the skills.sh CLI so Cursor, Claude Code, Codex, and other agents can find and read your meeting notes from any project."
+}
+
+function defaultWidgetSettings() {
+  return {
+    notesDir: "",
+    chunkSeconds: 30,
+    whisperLanguage: "auto",
+    keepAudio: false,
+    autoEnableVoxtypeMeeting: true,
+    summaryPreprompt: "",
+    listMeetingsMax: 5,
+    panelScreen: "list",
+    panelDetailPath: "",
+    panelDetailTab: "0"
+  }
 }
 
 function liveSummaryPreview(state) {
@@ -692,6 +754,35 @@ function isSavingMeeting(state) {
   )
 }
 
+function isGeneratingSummary(state) {
+  if (!state || typeof state !== "object") return false
+  if (state.summaryRefreshing === true) return true
+  if (state.busy !== true) return false
+  var label = String(state.busyLabel || "").toLowerCase()
+  return label.indexOf("generating") >= 0 || label.indexOf("summary") >= 0
+}
+
+function summaryLoadingVisible(state, tabId) {
+  if (String(tabId || "") !== "summary") return false
+  if (String((state && state.summary) || "").trim() !== "") return false
+  if (!state) return false
+  return state.busy === true || state.summaryRefreshing === true
+}
+
+function summaryLoadingTitle(state) {
+  if (isGeneratingSummary(state)) return "Generating summary"
+  var label = String((state && state.busyLabel) || "").toLowerCase()
+  if (label.indexOf("exporting") >= 0) return "Saving transcript"
+  if (label.indexOf("stopping") >= 0) return "Stopping capture"
+  return "Working"
+}
+
+function summaryLoadingCaption(state) {
+  var label = String((state && state.busyLabel) || "").trim()
+  if (label !== "") return label
+  return "Working…"
+}
+
 function captureStatusVisible(state) {
   if (!state || typeof state !== "object") return false
   return state.recordingThisMeeting === true || isSavingMeeting(state)
@@ -708,6 +799,20 @@ function recordingStatusDetail(state, nowSeconds) {
 }
 
 function recordingStatusFooter(state) {
+  return recordingBannerTitle(state)
+}
+
+function recordingOpenPath(state) {
+  if (!state || typeof state !== "object") return ""
+  var path = String(state.recordingMeetingPath || "").trim()
+  if (path !== "") return path
+  return String(state.meetingPath || "").trim()
+}
+
+function recordingBannerTitle(state) {
+  var path = recordingOpenPath(state)
+  var match = findMeetingByPath(state && state.meetings, path)
+  if (match && match.title) return String(match.title)
   var title = String((state && state.title) || "").trim()
   return title || "Meeting"
 }
@@ -855,6 +960,10 @@ function askAgentLaunchPrompt(state) {
   return line + "\n\n"
 }
 
+function askAgentSkillPrompt() {
+  return "/omarchy-meetings\n\n"
+}
+
 function askAgentButtonLabel(state) {
   if (state && state.skillInstalled === true) return "Ask Agent"
   return "Install Agent skill"
@@ -872,6 +981,14 @@ function askAgentTooltip(state) {
   if (!state.defaultAgent)
     return "Set default agent: omarchy default agent <name>"
   return "Open your default agent with /omarchy-meetings plus this meeting's title and date, then add your question"
+}
+
+function askAgentListTooltip(state) {
+  if (!state || state.skillInstalled !== true)
+    return "Install /omarchy-meetings globally so any agent can read your meeting notes"
+  if (!state.defaultAgent)
+    return "Set default agent: omarchy default agent <name>"
+  return "Open your default agent with /omarchy-meetings"
 }
 
 function normalizeDetailTabIndex(state, tabIndex) {
@@ -892,6 +1009,8 @@ if (typeof module !== "undefined") {
   module.exports = {
     meetingIcon: meetingIcon,
     elide: elide,
+    compactMarkdownHeadings: compactMarkdownHeadings,
+    markdownToPreviewHtml: markdownToPreviewHtml,
     formatDuration: formatDuration,
     formatDateTime: formatDateTime,
     formatRelativeTime: formatRelativeTime,
@@ -899,20 +1018,9 @@ if (typeof module !== "undefined") {
     normalizeBool: normalizeBool,
     meetingSearchHaystack: meetingSearchHaystack,
     filterMeetings: filterMeetings,
-    normalizeTag: normalizeTag,
-    normalizeTags: normalizeTags,
-    formatTagsInput: formatTagsInput,
-    formatTagsPreview: formatTagsPreview,
-    tagChipLabel: tagChipLabel,
-    meetingTags: meetingTags,
-    meetingHasTag: meetingHasTag,
-    uniqueMeetingTags: uniqueMeetingTags,
-    isTagFilterQuery: isTagFilterQuery,
-    toggleTagFilterQuery: toggleTagFilterQuery,
-    tagsEqual: tagsEqual,
-    addMeetingTag: addMeetingTag,
-    removeMeetingTag: removeMeetingTag,
     meetingsForList: meetingsForList,
+    meetingStats: meetingStats,
+    formatDurationShort: formatDurationShort,
     limitMeetings: limitMeetings,
     normalizeListMeetingsMax: normalizeListMeetingsMax,
     listMeetingsMaxOptions: listMeetingsMaxOptions,
@@ -948,10 +1056,16 @@ if (typeof module !== "undefined") {
     recordingChunkTooltip: recordingChunkTooltip,
     liveTranscriptWaitingText: liveTranscriptWaitingText,
     isSavingMeeting: isSavingMeeting,
+    isGeneratingSummary: isGeneratingSummary,
+    summaryLoadingVisible: summaryLoadingVisible,
+    summaryLoadingTitle: summaryLoadingTitle,
+    summaryLoadingCaption: summaryLoadingCaption,
     captureStatusVisible: captureStatusVisible,
     recordingStatusHeadline: recordingStatusHeadline,
     recordingStatusDetail: recordingStatusDetail,
     recordingStatusFooter: recordingStatusFooter,
+    recordingOpenPath: recordingOpenPath,
+    recordingBannerTitle: recordingBannerTitle,
     transcriptStatusHeadline: transcriptStatusHeadline,
     transcriptStatusFooter: transcriptStatusFooter,
     transcriptProgressRatio: transcriptProgressRatio,
@@ -965,6 +1079,7 @@ if (typeof module !== "undefined") {
     skillInstallTooltip: skillInstallTooltip,
     skillInstallStatusText: skillInstallStatusText,
     skillInstallHelpText: skillInstallHelpText,
+    defaultWidgetSettings: defaultWidgetSettings,
     sortMeetings: sortMeetings,
     meetingExists: meetingExists,
     canOpenMeetingDetail: canOpenMeetingDetail,
@@ -976,9 +1091,11 @@ if (typeof module !== "undefined") {
     canDeleteMeeting: canDeleteMeeting,
     deleteMeetingTooltip: deleteMeetingTooltip,
     askAgentLaunchPrompt: askAgentLaunchPrompt,
+    askAgentSkillPrompt: askAgentSkillPrompt,
     askAgentButtonLabel: askAgentButtonLabel,
     canAskAgent: canAskAgent,
     askAgentTooltip: askAgentTooltip,
+    askAgentListTooltip: askAgentListTooltip,
     normalizeDetailTabIndex: normalizeDetailTabIndex,
     tabIndexFor: tabIndexFor
   }

@@ -33,7 +33,7 @@ Item {
       cmd: "reload-settings",
       notesDir: setting("notesDir", ""),
       chunkSeconds: Number(setting("chunkSeconds", 30)) || 30,
-      whisperLanguage: String(setting("whisperLanguage", "es") || "es"),
+      whisperLanguage: String(setting("whisperLanguage", "auto") || "auto"),
       keepAudio: Model.normalizeBool(setting("keepAudio", false), false),
       autoEnableVoxtypeMeeting: Model.normalizeBool(setting("autoEnableVoxtypeMeeting", true), true),
       summaryPreprompt: String(setting("summaryPreprompt", "") || "")
@@ -78,8 +78,8 @@ Item {
     sendCommand({ cmd: "refresh" })
   }
 
-  function createMeeting(title, tags) {
-    sendCommand({ cmd: "create-meeting", title: title || "Meeting", tags: tags || [] })
+  function createMeeting(title) {
+    sendCommand({ cmd: "create-meeting", title: title || "Meeting" })
   }
 
   function startRecording(title) {
@@ -102,10 +102,6 @@ Item {
     sendCommand({ cmd: "save-notes", path: path || state.meetingPath || "", content: content || "" })
   }
 
-  function saveTags(path, tags) {
-    sendCommand({ cmd: "save-tags", path: path || state.meetingPath || "", tags: tags || [] })
-  }
-
   function createNotes(path) {
     sendCommand({ cmd: "create-notes", path: path || state.meetingPath || "" })
   }
@@ -122,12 +118,24 @@ Item {
     sendCommand({ cmd: "open-agent", path: path || state.meetingPath || "" })
   }
 
+  function openAgentWithSkill() {
+    sendCommand({ cmd: "open-agent", skillOnly: true })
+  }
+
   function deleteMeeting(path) {
     sendCommand({ cmd: "delete-meeting", path: path || state.meetingPath || "" })
   }
 
+  function deleteAllMeetings() {
+    sendCommand({ cmd: "delete-all-meetings" })
+  }
+
   function completeOnboarding() {
     sendCommand({ cmd: "complete-onboarding" })
+  }
+
+  function resetSettings() {
+    sendCommand({ cmd: "reset-settings" })
   }
 
   function installSkill() {

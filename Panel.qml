@@ -25,8 +25,6 @@ Panel {
   property string searchQuery: ""
   property int listPage: 0
   property string titleDraft: "Meeting"
-  property string tagsDraft: ""
-  property string tagDraft: ""
   property var detailMeeting: null
   property int detailTabIndex: 0
   property string notesDraft: ""
@@ -38,6 +36,8 @@ Panel {
   property int nowSeconds: Math.floor(Date.now() / 1000)
 
   property bool onboardingDismissed: false
+  property string pendingSettingsAction: ""
+  property bool awaitingOnboardingReset: false
 
   readonly property var state: service ? service.state : Model.emptyState()
   readonly property var meetings: Model.sortMeetings(state.meetings || [])
@@ -46,15 +46,14 @@ Panel {
     && service.helperReady
     && state.onboardingComplete !== true
   readonly property var filteredMeetings: Model.filterMeetings(meetings, searchQuery)
-  readonly property var availableTags: Model.uniqueMeetingTags(meetings)
-  readonly property var currentMeetingTags: Model.meetingTags(state)
   readonly property int listMeetingsMax: Model.normalizeListMeetingsMax(setting("listMeetingsMax", 5))
   readonly property int filteredMeetingsCount: filteredMeetings.length
   readonly property int safeListPage: Model.normalizeListPage(listPage, filteredMeetingsCount, listMeetingsMax)
   readonly property var visibleMeetings: Model.meetingsForList(meetings, searchQuery, listMeetingsMax, listPage)
+  readonly property var meetingStats: Model.meetingStats(meetings, nowSeconds)
   readonly property string listPaginationLabel: Model.listMeetingsPaginationLabel(filteredMeetingsCount, safeListPage, listMeetingsMax)
   readonly property bool listPaginationVisible: Model.listPaginationVisible(filteredMeetingsCount, listMeetingsMax)
-  readonly property int listRowHeight: Style.space(56)
+  readonly property int listRowHeight: Style.space(44)
   readonly property int listAreaHeight: listMeetingsMax * listRowHeight
   readonly property int detailNotesHeight: Style.space(220)
   readonly property bool recording: state.recording === true
@@ -77,11 +76,6 @@ Panel {
     : "summary"
   readonly property string activeDetailText: Model.detailTabContent(state, activeDetailTabId)
   readonly property int chunkSecondsSetting: Model.normalizeChunkSeconds(setting("chunkSeconds", 30))
-  readonly property string recordingChunkProgress: Model.recordingChunkProgress(state, nowSeconds, chunkSecondsSetting)
-  readonly property string liveTranscriptText: Model.liveTranscriptPreview(state)
-  readonly property string liveSummaryText: Model.liveSummaryPreview(state)
-  readonly property string liveSummaryStatus: Model.liveSummaryStatusText(state, chunkSecondsSetting)
-  readonly property string liveTranscriptWaitingText: Model.liveTranscriptWaitingText(state, nowSeconds, chunkSecondsSetting)
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -158,6 +152,39 @@ Panel {
     ])
   }
 
+  function installSkillInTerminal() {
+    Quickshell.execDetached([
+      "omarchy-launch-floating-terminal-with-presentation",
+      Model.skillGithubInstallCommand()
+    ])
+    if (service) Qt.callLater(function() { service.refresh() })
+  }
+
+  function requestSettingsAction(action) {
+    pendingSettingsAction = action
+    settingsConfirm.selectedIndex = 1
+  }
+
+  function applyResetSettings() {
+    awaitingOnboardingReset = true
+    var defaults = Model.defaultWidgetSettings()
+    for (var key in defaults)
+      if (service) service.persistSetting(key, defaults[key])
+    if (service) service.resetSettings()
+    onboardingDismissed = false
+    onboardingStep = 0
+    screen = "list"
+    copyMenuOpen = false
+  }
+
+  function applyDeleteAllMeetings() {
+    if (service) service.deleteAllMeetings()
+    detailMeeting = null
+    lastDetailPath = ""
+    notesDraft = ""
+    if (screen === "detail") showList()
+  }
+
   function nextOnboardingStep() {
     if (onboardingStep < 2) onboardingStep += 1
   }
@@ -168,7 +195,7 @@ Panel {
 
   function showDetail(path, options) {
     options = options || {}
-    var meetingPath = String(path || state.meetingPath || "").trim()
+    var meetingPath = String(path || root.state.meetingPath || "").trim()
     if (meetingPath === "") return
     lastDetailPath = meetingPath
     detailMeeting = options.entry
@@ -181,17 +208,28 @@ Panel {
     }
     screen = "detail"
     if (options.resetTab !== false)
-      detailTabIndex = Model.tabIndexFor(state, "summary")
-    notesDraft = state.meetingPath === meetingPath ? (state.notes || "") : ""
+      detailTabIndex = Model.tabIndexFor(root.state, "summary")
+    notesDraft = root.state.meetingPath === meetingPath ? (root.state.notes || "") : ""
     notesEditorVisible = false
     copyMenuOpen = false
-    tagDraft = ""
+  }
+
+  function openRecordingMeeting() {
+    var path = Model.recordingOpenPath(root.state)
+    if (path === "") return
+    showDetail(path, {
+      entry: Model.findMeetingByPath(meetings, path),
+      resetTab: false
+    })
   }
 
   function showSettings() {
     screen = "settings"
     copyMenuOpen = false
-    if (service) service.persistSetting("panelScreen", "settings")
+    if (service) {
+      service.persistSetting("panelScreen", "settings")
+      service.refresh()
+    }
   }
 
   function loadPersistedPanelNavigation() {
@@ -240,27 +278,7 @@ Panel {
     if (!service || busy) return
     createdMeetingGuardPath = String(state.meetingPath || "")
     waitingForCreatedMeeting = true
-    service.createMeeting(titleDraft.trim() || "Meeting", tagsDraft)
-    tagsDraft = ""
-  }
-
-  function persistTags(tags) {
-    if (!service || !state.meetingPath) return
-    service.saveTags(state.meetingPath, tags)
-  }
-
-  function addDetailTag() {
-    var next = Model.addMeetingTag(state.tags, tagDraft)
-    tagDraft = ""
-    persistTags(next)
-  }
-
-  function removeDetailTag(tag) {
-    persistTags(Model.removeMeetingTag(state.tags, tag))
-  }
-
-  function applyTagFilter(tag) {
-    searchQuery = Model.toggleTagFilterQuery(searchQuery, tag)
+    service.createMeeting(titleDraft.trim() || "Meeting")
   }
 
   function startTranscription() {
@@ -302,20 +320,30 @@ Panel {
   }
 
   function copyText(text) {
-    copyMenuOpen = false
+    root.copyMenuOpen = false
     if (!text) return
     copyProc.textToCopy = text
+    copyProc.stdinEnabled = true
     copyProc.running = false
     Qt.callLater(function() { copyProc.running = true })
   }
 
   function askAgentWithMeeting() {
     if (!service || busy) return
-    if (state.skillInstalled !== true) {
-      service.installSkill()
+    if (root.state.skillInstalled !== true) {
+      root.installSkillInTerminal()
       return
     }
-    service.openAgentWithMeeting(state.meetingPath || "")
+    service.openAgentWithMeeting(root.state.meetingPath || "")
+  }
+
+  function askAgentFromList() {
+    if (!service || busy) return
+    if (root.state.skillInstalled !== true) {
+      root.installSkillInTerminal()
+      return
+    }
+    service.openAgentWithSkill()
   }
 
   function deleteMeeting(path) {
@@ -328,8 +356,8 @@ Panel {
   }
 
   function copyCurrent(mode) {
-    if (mode === "markdown") copyText(Model.buildCopyMarkdown(state))
-    else copyText(Model.buildCopyText(state, activeDetailTabId))
+    if (mode === "markdown") copyText(Model.buildCopyMarkdown(root.state))
+    else copyText(Model.buildCopyText(root.state, activeDetailTabId))
   }
 
   function openNotesDir() {
@@ -369,8 +397,14 @@ Panel {
   }
 
   onStateChanged: {
-    if (state.onboardingComplete === true)
+    if (awaitingOnboardingReset) {
+      if (state.onboardingComplete !== true) {
+        awaitingOnboardingReset = false
+        onboardingDismissed = false
+      }
+    } else if (state.onboardingComplete === true) {
       onboardingDismissed = true
+    }
     if (screen === "detail" && state.meetingPath) {
       lastDetailPath = state.meetingPath
       if (!detailMeeting || detailMeeting.path !== state.meetingPath)
@@ -431,12 +465,22 @@ Panel {
     onTriggered: nowSeconds = Math.floor(Date.now() / 1000)
   }
 
+  Timer {
+    interval: 2500
+    running: root.opened && root.screen === "settings"
+    repeat: true
+    onTriggered: if (service) service.refresh()
+  }
+
   Process {
     id: copyProc
     property string textToCopy: ""
     command: ["wl-copy"]
     stdinEnabled: true
-    onStarted: write(textToCopy)
+    onStarted: {
+      write(textToCopy)
+      stdinEnabled = false
+    }
   }
 
   KeyboardPanel {
@@ -454,14 +498,32 @@ Panel {
       anchors.fill: parent
       blocked: notesField.activeFocus || activeNotesField.activeFocus || settingsPrepromptField.activeFocus
         || searchField.activeFocus
-        || tagsCreateField.activeFocus
-        || tagAddField.activeFocus
       onCloseRequested: {
+        if (root.pendingSettingsAction !== "") {
+          root.pendingSettingsAction = ""
+          return
+        }
         if (needsOnboarding) root.close()
         else if (screen !== "list") showList()
         else root.close()
       }
-      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) {
+        if (root.pendingSettingsAction === "") return
+        if (dx !== 0)
+          settingsConfirm.selectedIndex = settingsConfirm.selectedIndex === 0 ? 1 : 0
+      }
+      onActivateRequested: {
+        if (root.pendingSettingsAction === "") return
+        if (settingsConfirm.selectedIndex === 0) settingsConfirm.canceled()
+        else settingsConfirm.confirmed()
+      }
+      onTabRequested: function(direction) {
+        if (root.pendingSettingsAction !== "") {
+          settingsConfirm.selectedIndex = settingsConfirm.selectedIndex === 0 ? 1 : 0
+          return
+        }
+        root.switchPanel(direction)
+      }
     }
 
     ColumnLayout {
@@ -474,6 +536,32 @@ Panel {
         sourceComponent: root.needsOnboarding ? onboardingScreen
           : (root.screen === "settings" ? settingsScreen
           : (root.screen === "detail" ? detailScreen : listScreen))
+      }
+    }
+
+    ConfirmDialog {
+      id: settingsConfirm
+      anchors.fill: parent
+      opened: root.pendingSettingsAction !== ""
+      z: 20
+      message: root.pendingSettingsAction === "delete-all"
+        ? "Delete all meetings permanently? This cannot be undone."
+        : "Reset all settings and show onboarding again? Meetings stay on disk."
+      confirmText: root.pendingSettingsAction === "delete-all" ? "Delete all" : "Reset"
+      background: Color.popups.background
+      foreground: root.foreground
+      scrim: Qt.rgba(0, 0, 0, 0.55)
+      selectedBackground: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+      selectedText: Color.accent
+      fontFamily: root.fontFamily
+      cornerRadius: Style.cornerRadius
+      onCanceled: root.pendingSettingsAction = ""
+      onConfirmed: {
+        if (root.pendingSettingsAction === "delete-all")
+          root.applyDeleteAllMeetings()
+        else if (root.pendingSettingsAction === "reset")
+          root.applyResetSettings()
+        root.pendingSettingsAction = ""
       }
     }
   }
@@ -756,66 +844,78 @@ Panel {
 
       PanelSectionHeader {
         Layout.fillWidth: true
+        visible: !root.recording
         text: "NEW MEETING"
         foreground: root.foreground
         fontFamily: root.fontFamily
       }
 
-      TextField {
+      RowLayout {
         Layout.fillWidth: true
-        text: root.titleDraft
-        placeholderText: "Meeting title"
-        enabled: !busy && state.voxtypeReady
-        color: root.foreground
-        placeholderTextColor: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        onTextChanged: root.titleDraft = text
+        visible: !root.recording
+        spacing: Style.spacing.controlGap
+
+        TextField {
+          id: newMeetingTitle
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          text: root.titleDraft
+          placeholderText: "Meeting title"
+          enabled: !busy && state.voxtypeReady
+          color: root.foreground
+          placeholderTextColor: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          onTextChanged: root.titleDraft = text
+        }
+
+        PanelTextButton {
+          Layout.fillHeight: true
+          Layout.preferredHeight: newMeetingTitle.implicitHeight
+          implicitHeight: newMeetingTitle.implicitHeight
+          label: "Create"
+          tooltip: "Create a draft meeting in the list"
+          labelBold: true
+          labelColor: root.foreground
+          accentColor: Color.accent
+          fontFamily: root.fontFamily
+          actionable: !busy && state.voxtypeReady && !recording
+          onActivated: root.createMeeting()
+        }
       }
 
-      TextField {
-        id: tagsCreateField
+      PanelSectionHeader {
         Layout.fillWidth: true
-        text: root.tagsDraft
-        placeholderText: "Tags · standup, 1-1"
-        enabled: !busy && state.voxtypeReady
-        color: root.foreground
-        placeholderTextColor: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        onTextChanged: root.tagsDraft = text
-      }
-
-      Text {
-        Layout.fillWidth: true
-        visible: Model.formatTagsPreview(root.tagsDraft) !== ""
-        text: "Saved as " + Model.formatTagsPreview(root.tagsDraft)
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        wrapMode: Text.WordWrap
-      }
-
-      PanelTextButton {
-        Layout.fillWidth: true
-        label: "Create meeting"
-        tooltip: "Create a draft meeting in the list"
-        labelBold: true
-        labelColor: root.foreground
-        accentColor: Color.accent
+        visible: root.recording
+        text: "NOW TRANSCRIBING"
+        foreground: root.urgent
         fontFamily: root.fontFamily
-        actionable: !busy && state.voxtypeReady && !recording
-        onActivated: root.createMeeting()
+      }
+
+      CaptureStatusBox {
+        Layout.fillWidth: true
+        visible: root.recording
+        iconText: "󰻃"
+        title: "TRANSCRIBING"
+        headline: Model.recordingBannerTitle(root.state)
+        showDot: root.recording && !root.busy
+        detail: Model.recordingStatusDetail(root.state, root.nowSeconds)
+        footer: ""
+        progress: -1
+        foreground: root.foreground
+        accent: root.urgent
+        dim: root.dim
+        fontFamily: root.fontFamily
       }
 
       RowLayout {
         Layout.fillWidth: true
         spacing: Style.spacing.controlGap
-        visible: recording
+        visible: root.recording
 
         PanelTextButton {
           Layout.fillWidth: true
-          label: "󰻃  Transcribing — open meeting"
+          label: "Open meeting"
           tooltip: "Open the meeting being transcribed"
           labelColor: root.urgent
           accentColor: root.urgent
@@ -824,7 +924,8 @@ Panel {
           fontFamily: root.fontFamily
           fontPixelSize: Style.font.bodySmall
           labelBold: true
-          onActivated: root.showDetail(state.meetingPath)
+          actionable: Model.recordingOpenPath(root.state) !== ""
+          onActivated: root.openRecordingMeeting()
         }
 
         PanelTextButton {
@@ -843,16 +944,6 @@ Panel {
 
       Text {
         Layout.fillWidth: true
-        visible: recording && recordingChunkProgress !== ""
-        text: recordingChunkProgress
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        wrapMode: Text.WordWrap
-      }
-
-      Text {
-        Layout.fillWidth: true
         visible: lastError !== ""
         wrapMode: Text.WordWrap
         color: root.urgent
@@ -863,78 +954,166 @@ Panel {
 
       Rectangle {
         Layout.fillWidth: true
-        Layout.topMargin: Style.space(20)
-        Layout.bottomMargin: Style.space(12)
+        Layout.topMargin: Style.space(2)
+        Layout.bottomMargin: Style.space(2)
         Layout.preferredHeight: 1
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
       }
 
-      PanelSectionHeader {
+      RowLayout {
         Layout.fillWidth: true
-        text: "MEETINGS"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
+        spacing: Style.spacing.controlGap
+
+        PanelSectionHeader {
+          Layout.fillWidth: true
+          text: "MEETINGS"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+        }
+
+        PanelTextButton {
+          label: Model.askAgentButtonLabel(root.state)
+          tooltip: Model.askAgentListTooltip(root.state)
+          labelColor: root.foreground
+          accentColor: Color.accent
+          fontFamily: root.fontFamily
+          fontPixelSize: Style.font.bodySmall
+          actionable: !root.busy
+          onActivated: root.askAgentFromList()
+        }
+      }
+
+      Rectangle {
+        Layout.fillWidth: true
+        visible: meetings.length > 0
+        radius: Style.cornerRadius
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+        implicitHeight: statsRow.implicitHeight + Style.spacing.panelPadding * 2
+
+        RowLayout {
+          id: statsRow
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.leftMargin: Style.spacing.panelPadding
+          anchors.rightMargin: Style.spacing.panelPadding
+          spacing: Style.space(8)
+
+          Column {
+            Layout.fillWidth: true
+            spacing: Style.space(2)
+
+            Text {
+              text: "MEETS"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.6
+            }
+            Text {
+              text: meetingStats.countLabel
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+          }
+
+          Rectangle {
+            Layout.preferredWidth: 1
+            Layout.preferredHeight: Style.space(28)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          }
+
+          Column {
+            Layout.fillWidth: true
+            spacing: Style.space(2)
+
+            Text {
+              text: "TOTAL"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.6
+            }
+            Text {
+              text: meetingStats.totalLabel
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+          }
+
+          Rectangle {
+            Layout.preferredWidth: 1
+            Layout.preferredHeight: Style.space(28)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          }
+
+          Column {
+            Layout.fillWidth: true
+            spacing: Style.space(2)
+
+            Text {
+              text: "AVG"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.6
+            }
+            Text {
+              text: meetingStats.avgLabel
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+          }
+
+          Rectangle {
+            Layout.preferredWidth: 1
+            Layout.preferredHeight: Style.space(28)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          }
+
+          Column {
+            Layout.fillWidth: true
+            spacing: Style.space(2)
+
+            Text {
+              text: "PER DAY"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.6
+            }
+            Text {
+              text: meetingStats.perDayLabel
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+          }
+        }
       }
 
       TextField {
         id: searchField
         Layout.fillWidth: true
         text: root.searchQuery
-        placeholderText: "Search titles, notes, transcripts, or #tag…"
+        placeholderText: "Search titles, notes, or transcripts…"
         color: root.foreground
         placeholderTextColor: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         onTextChanged: root.searchQuery = text
-      }
-
-      Flow {
-        Layout.fillWidth: true
-        spacing: Style.space(6)
-        visible: availableTags.length > 0
-
-        Repeater {
-          model: availableTags
-
-          delegate: CursorSurface {
-            required property var modelData
-            property bool pointerHot: false
-            implicitWidth: tagFilterLabel.implicitWidth + Style.space(16)
-            implicitHeight: tagFilterLabel.implicitHeight + Style.space(10)
-            foreground: root.foreground
-            accent: Color.accent
-            bordered: true
-            hasCursor: pointerHot
-            current: Model.isTagFilterQuery(root.searchQuery) && Model.normalizeTag(root.searchQuery) === modelData
-
-            HoverHandler {
-              onHoveredChanged: pointerHot = hovered
-            }
-
-            PanelToolTip {
-              visible: pointerHot
-              text: current ? "Clear #tag filter" : ("Show meetings tagged " + Model.tagChipLabel(modelData))
-              fontFamily: root.fontFamily
-            }
-
-            Text {
-              id: tagFilterLabel
-              anchors.centerIn: parent
-              text: Model.tagChipLabel(modelData)
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              font.bold: parent.current
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.applyTagFilter(modelData)
-            }
-          }
-        }
       }
 
       Rectangle {
@@ -997,7 +1176,7 @@ Panel {
           anchors.top: parent.top
           anchors.left: parent.left
           anchors.right: parent.right
-          spacing: Style.space(6)
+          spacing: Style.space(4)
 
         Text {
           Layout.fillWidth: true
@@ -1005,89 +1184,119 @@ Panel {
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
-          text: Model.isTagFilterQuery(root.searchQuery)
-            ? ("No meetings tagged " + Model.tagChipLabel(root.searchQuery) + ".")
-            : "No meetings match your search."
+          text: "No meetings match your search."
         }
 
         Repeater {
-          model: visibleMeetings
+          model: root.visibleMeetings
 
           delegate: CursorSurface {
             id: meetingRow
             required property var modelData
-            property bool pointerHot: false
+            readonly property bool isRecordingRow: root.recordingMeetingPath !== "" && modelData.path === root.recordingMeetingPath
+            readonly property bool canDelete: Model.canDeleteMeeting(root.state, modelData.path, root.recordingMeetingPath) && !root.busy
+
             Layout.fillWidth: true
-            Layout.preferredHeight: listRowHeight - Style.space(6)
+            implicitHeight: rowBody.implicitHeight
             foreground: root.foreground
-            accent: (root.recordingMeetingPath !== "" && modelData.path === root.recordingMeetingPath) ? root.urgent : Color.accent
-            bordered: true
-            hasCursor: pointerHot || (root.recordingMeetingPath !== "" && modelData.path === root.recordingMeetingPath)
-            current: root.recordingMeetingPath !== "" && modelData.path === root.recordingMeetingPath
-
-            RowLayout {
-              anchors.fill: parent
-              anchors.leftMargin: Style.spacing.controlPaddingX
-              anchors.rightMargin: Style.space(6)
-              spacing: Style.space(4)
-
-              Item {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-
-                HoverHandler {
-                  onHoveredChanged: meetingRow.pointerHot = hovered
-                }
-
-                PanelToolTip {
-                  visible: meetingRow.pointerHot
-                  text: "Open this meeting"
-                  fontFamily: root.fontFamily
-                }
-
-                ColumnLayout {
-                  anchors.fill: parent
-                  spacing: Style.space(2)
-
-                  Text {
-                    text: Model.meetingLabel(modelData)
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                  }
-
-                  Text {
-                    text: Model.meetingListSubtitle(modelData, root.nowSeconds)
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    Layout.fillWidth: true
-                  }
-                }
+            accent: isRecordingRow ? root.urgent : Color.accent
+            hasCursor: rowMouse.containsMouse && !deleteMouse.containsMouse
+            current: isRecordingRow
 
                 MouseArea {
-                  anchors.fill: parent
+                  id: rowMouse
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.top: parent.top
+                  height: rowBody.implicitHeight
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
                   onClicked: root.showDetail(modelData.path, { entry: modelData, resetTab: false })
                 }
-              }
 
-              PanelActionButton {
-                Layout.alignment: Qt.AlignVCenter
-                iconText: "󰅖"
-                foreground: root.dim
-                hoverColor: root.urgent
-                fontFamily: root.fontFamily
-                bordered: false
-                tooltipText: Model.deleteMeetingTooltip(state, modelData.path, recordingMeetingPath)
-                enabled: Model.canDeleteMeeting(state, modelData.path, recordingMeetingPath) && !busy
-                onClicked: root.deleteMeeting(modelData.path)
+                PanelToolTip {
+                  visible: rowMouse.containsMouse && !deleteMouse.containsMouse
+                  text: "Open this meeting"
+                  fontFamily: root.fontFamily
+                }
+
+                Item {
+                  id: rowBody
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.top: parent.top
+                  anchors.leftMargin: Style.space(10)
+                  anchors.rightMargin: Style.space(10)
+                  implicitHeight: Math.max(meetingInfo.implicitHeight, deleteAction.implicitHeight) + Style.spacing.rowPaddingX
+
+                  Item {
+                    id: deleteAction
+                    width: Style.space(22)
+                    implicitHeight: deleteGlyph.implicitHeight
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Text {
+                      id: deleteGlyph
+                      width: parent.width
+                      anchors.verticalCenter: parent.verticalCenter
+                      horizontalAlignment: Text.AlignHCenter
+                      text: "󰅖"
+                      color: deleteMouse.containsMouse && meetingRow.canDelete
+                        ? root.urgent
+                        : Qt.darker(root.foreground, 1.4)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.subtitle
+                      opacity: meetingRow.canDelete ? 1 : 0.35
+                    }
+
+                    MouseArea {
+                      id: deleteMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      acceptedButtons: Qt.LeftButton
+                      enabled: meetingRow.canDelete
+                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onClicked: root.deleteMeeting(modelData.path)
+                    }
+
+                    PanelToolTip {
+                      visible: deleteMouse.containsMouse
+                      text: Model.deleteMeetingTooltip(root.state, modelData.path, root.recordingMeetingPath)
+                      fontFamily: root.fontFamily
+                    }
+                  }
+
+                  Column {
+                    id: meetingInfo
+                    spacing: Style.space(1)
+                    anchors.left: parent.left
+                    anchors.right: deleteAction.left
+                    anchors.rightMargin: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Text {
+                      text: Model.meetingLabel(modelData)
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      elide: Text.ElideRight
+                      width: parent.width
+                    }
+
+                    Text {
+                      text: Model.meetingListSubtitle(modelData, root.nowSeconds)
+                      visible: text !== ""
+                      height: visible ? implicitHeight : 0
+                      color: meetingRow.isRecordingRow ? root.urgent : Qt.darker(root.foreground, 1.5)
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                      width: parent.width
+                    }
+                  }
+                }
               }
-            }
-          }
         }
         }
       }
@@ -1098,16 +1307,35 @@ Panel {
         visible: listPaginationLabel !== ""
         spacing: Style.spacing.controlGap
 
-        PanelActionButton {
+        Item {
           visible: listPaginationVisible
-          iconText: "󰁍"
-          foreground: root.foreground
-          hoverColor: root.foreground
-          fontFamily: root.fontFamily
-          bordered: true
-          tooltipText: "Previous page"
+          implicitWidth: Style.space(22)
+          implicitHeight: Style.space(22)
           enabled: Model.canGoListPagePrev(safeListPage, filteredMeetingsCount, listMeetingsMax)
-          onClicked: root.showPrevListPage()
+          opacity: enabled ? 1 : 0.4
+
+          Text {
+            anchors.centerIn: parent
+            text: "󰁍"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.icon
+          }
+
+          MouseArea {
+            id: prevPageMouse
+            anchors.fill: parent
+            enabled: parent.enabled
+            hoverEnabled: true
+            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: root.showPrevListPage()
+          }
+
+          PanelToolTip {
+            visible: prevPageMouse.containsMouse
+            text: "Previous page"
+            fontFamily: root.fontFamily
+          }
         }
 
         Text {
@@ -1119,16 +1347,35 @@ Panel {
           horizontalAlignment: listPaginationVisible ? Text.AlignHCenter : Text.AlignRight
         }
 
-        PanelActionButton {
+        Item {
           visible: listPaginationVisible
-          iconText: "󰁔"
-          foreground: root.foreground
-          hoverColor: root.foreground
-          fontFamily: root.fontFamily
-          bordered: true
-          tooltipText: "Next page"
+          implicitWidth: Style.space(22)
+          implicitHeight: Style.space(22)
           enabled: Model.canGoListPageNext(safeListPage, filteredMeetingsCount, listMeetingsMax)
-          onClicked: root.showNextListPage()
+          opacity: enabled ? 1 : 0.4
+
+          Text {
+            anchors.centerIn: parent
+            text: "󰁔"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.icon
+          }
+
+          MouseArea {
+            id: nextPageMouse
+            anchors.fill: parent
+            enabled: parent.enabled
+            hoverEnabled: true
+            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: root.showNextListPage()
+          }
+
+          PanelToolTip {
+            visible: nextPageMouse.containsMouse
+            text: "Next page"
+            fontFamily: root.fontFamily
+          }
         }
       }
     }
@@ -1201,85 +1448,6 @@ Panel {
         }
       }
 
-      Flow {
-        Layout.fillWidth: true
-        spacing: Style.space(6)
-        visible: currentMeetingTags.length > 0
-
-        Repeater {
-          model: currentMeetingTags
-
-          delegate: CursorSurface {
-            required property var modelData
-            property bool pointerHot: false
-            implicitWidth: detailTagLabel.implicitWidth + Style.space(16)
-            implicitHeight: detailTagLabel.implicitHeight + Style.space(10)
-            foreground: root.foreground
-            accent: Color.accent
-            bordered: true
-            hasCursor: pointerHot
-
-            HoverHandler {
-              onHoveredChanged: pointerHot = hovered
-            }
-
-            PanelToolTip {
-              visible: pointerHot
-              text: "Remove " + Model.tagChipLabel(modelData)
-              fontFamily: root.fontFamily
-            }
-
-            Text {
-              id: detailTagLabel
-              anchors.centerIn: parent
-              text: Model.tagChipLabel(modelData)
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.removeDetailTag(modelData)
-            }
-          }
-        }
-      }
-
-      RowLayout {
-        Layout.fillWidth: true
-        spacing: Style.spacing.controlGap
-        visible: state.meetingPath !== ""
-
-        TextField {
-          id: tagAddField
-          Layout.fillWidth: true
-          text: root.tagDraft
-          placeholderText: currentMeetingTags.length > 0 ? "Add another tag" : "Add tags · standup, 1-1"
-          enabled: !busy
-          color: root.foreground
-          placeholderTextColor: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          onTextChanged: root.tagDraft = text
-          Keys.onReturnPressed: root.addDetailTag()
-          Keys.onEnterPressed: root.addDetailTag()
-        }
-
-        PanelTextButton {
-          label: "Add"
-          tooltip: "Save this tag on the meeting"
-          labelColor: root.foreground
-          accentColor: Color.accent
-          fontFamily: root.fontFamily
-          fontPixelSize: Style.font.bodySmall
-          actionable: !busy && Model.normalizeTag(root.tagDraft) !== ""
-          onActivated: root.addDetailTag()
-        }
-      }
-
       RowLayout {
         Layout.fillWidth: true
         spacing: Style.spacing.controlGap
@@ -1303,13 +1471,14 @@ Panel {
 
         CaptureStatusBox {
           Layout.fillWidth: true
+          visible: Model.isSavingMeeting(root.state)
           iconText: "󰷈"
-          title: "TRANSCRIPT PROGRESS"
-          headline: Model.transcriptStatusHeadline(state)
-          showDot: false
+          title: "SAVING"
+          headline: Model.transcriptStatusHeadline(root.state)
+          showDot: true
           detail: ""
-          footer: Model.transcriptStatusFooter(state, nowSeconds, chunkSecondsSetting)
-          progress: Model.transcriptProgressRatio(state, nowSeconds, chunkSecondsSetting)
+          footer: Model.transcriptStatusFooter(root.state, nowSeconds, chunkSecondsSetting)
+          progress: Model.transcriptProgressRatio(root.state, nowSeconds, chunkSecondsSetting)
           foreground: root.foreground
           accent: Color.accent
           dim: root.dim
@@ -1350,90 +1519,6 @@ Panel {
           urgentColor: root.urgent
           fontFamily: root.fontFamily
           onActivated: root.stopTranscription()
-        }
-      }
-
-      PanelSectionHeader {
-        Layout.fillWidth: true
-        visible: detailActive && recordingThisMeeting
-        text: liveSummaryText !== ""
-          ? "Live summary"
-          : (state.summaryRefreshing ? "Live summary · updating…" : "Live summary · waiting")
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-      }
-
-      Text {
-        Layout.fillWidth: true
-        visible: detailActive && recordingThisMeeting && liveSummaryStatus !== ""
-        text: liveSummaryStatus
-        color: root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        wrapMode: Text.WordWrap
-      }
-
-      Rectangle {
-        Layout.fillWidth: true
-        Layout.preferredHeight: Math.min(Style.space(240), Math.max(Style.space(120), liveSummaryField.contentHeight + Style.space(24)))
-        visible: detailActive && recordingThisMeeting
-        radius: Style.cornerRadius
-        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-
-        ScrollView {
-          anchors.fill: parent
-          anchors.margins: Style.spacing.panelPadding
-          clip: true
-
-          TextArea {
-            id: liveSummaryField
-            readOnly: true
-            wrapMode: TextArea.Wrap
-            text: liveSummaryText || (state.summaryRefreshing ? "Generating summary…" : "")
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            background: null
-          }
-        }
-      }
-
-      PanelSectionHeader {
-        Layout.fillWidth: true
-        visible: detailActive && recordingThisMeeting
-        text: liveTranscriptText !== ""
-          ? (state.speakerCount > 0
-            ? ("Live transcript · " + state.speakerCount + " speaker" + (state.speakerCount === 1 ? "" : "s"))
-            : "Live transcript")
-          : ("Live transcript · waiting for first chunk")
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-      }
-
-      Rectangle {
-        Layout.fillWidth: true
-        Layout.preferredHeight: Style.space(200)
-        visible: detailActive && recordingThisMeeting
-        radius: Style.cornerRadius
-        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-
-        ScrollView {
-          anchors.fill: parent
-          anchors.margins: Style.spacing.panelPadding
-          clip: true
-
-          TextArea {
-            id: liveTranscriptField
-            readOnly: true
-            wrapMode: TextArea.Wrap
-            text: liveTranscriptText || (busy ? "" : liveTranscriptWaitingText)
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            background: null
-          }
         }
       }
 
@@ -1493,18 +1578,18 @@ Panel {
           Layout.preferredWidth: implicitWidth
           label: "Copy"
           tooltip: "Copy notes, summary, and transcript"
-          highlighted: copyMenuOpen
+          highlighted: root.copyMenuOpen
           labelColor: root.foreground
           accentColor: Color.accent
           fontFamily: root.fontFamily
           actionable: !root.busy && (Model.hasMeetingContent(root.state) || root.detailFinished)
-          onActivated: copyMenuOpen = !copyMenuOpen
+          onActivated: root.copyMenuOpen = !root.copyMenuOpen
         }
       }
 
       Column {
         Layout.fillWidth: true
-        visible: detailFinished && copyMenuOpen
+        visible: root.detailFinished && root.copyMenuOpen
         spacing: Style.space(4)
 
         PanelTextButton {
@@ -1620,22 +1705,27 @@ Panel {
             }
           }
 
-          ScrollView {
+          MarkdownView {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: activeDetailTabId !== "notes"
-            clip: true
+            visible: activeDetailTabId !== "notes" && !Model.summaryLoadingVisible(root.state, activeDetailTabId)
+            markdown: activeDetailText
+            foreground: root.foreground
+            accent: Color.accent
+            dim: root.dim
+            fontFamily: root.fontFamily
+          }
 
-            TextArea {
-              id: detailReadOnly
-              readOnly: true
-              wrapMode: TextArea.Wrap
-              text: activeDetailText || (busy ? String(state.busyLabel || "Working…") : "Nothing here yet.")
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              background: null
-            }
+          LoadingHint {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: Model.summaryLoadingVisible(root.state, activeDetailTabId)
+            iconText: Model.onboardingStepIcon(1)
+            title: Model.summaryLoadingTitle(root.state)
+            caption: Model.summaryLoadingCaption(root.state)
+            foreground: root.foreground
+            accent: Color.accent
+            fontFamily: root.fontFamily
           }
 
           PanelTextButton {
@@ -1816,7 +1906,7 @@ Panel {
             accent: Color.accent
             bordered: true
             hasCursor: pointerHot
-            current: setting("whisperLanguage", "es") === modelData
+            current: setting("whisperLanguage", "auto") === modelData
 
             HoverHandler {
               onHoveredChanged: pointerHot = hovered
@@ -1933,10 +2023,8 @@ Panel {
         labelColor: root.foreground
         accentColor: Color.accent
         fontFamily: root.fontFamily
-        actionable: !busy
-        onActivated: {
-          if (service) service.installSkill()
-        }
+        actionable: true
+        onActivated: root.installSkillInTerminal()
       }
 
       Text {
@@ -1956,6 +2044,58 @@ Panel {
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         text: Model.formatUserError(state.skillInstallError)
+      }
+
+      PanelSectionHeader {
+        Layout.fillWidth: true
+        Layout.topMargin: Style.space(8)
+        text: "DATA"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+      }
+
+      Text {
+        Layout.fillWidth: true
+        wrapMode: Text.WordWrap
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: "Reset restores defaults and onboarding. Meetings stay on disk."
+      }
+
+      PanelTextButton {
+        Layout.fillWidth: true
+        label: "Reset all settings"
+        tooltip: "Restore defaults and show onboarding again. Does not delete meetings."
+        labelBold: true
+        labelColor: root.foreground
+        accentColor: Color.accent
+        fontFamily: root.fontFamily
+        actionable: !busy
+        onActivated: root.requestSettingsAction("reset")
+      }
+
+      Text {
+        Layout.fillWidth: true
+        wrapMode: Text.WordWrap
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: "Permanently delete every meeting folder. Onboarding and settings stay."
+      }
+
+      PanelTextButton {
+        Layout.fillWidth: true
+        label: "Delete all meetings"
+        tooltip: "Delete every meeting on disk. This cannot be undone."
+        labelBold: true
+        labelColor: root.foreground
+        accentColor: Color.accent
+        urgentColor: root.urgent
+        urgent: true
+        fontFamily: root.fontFamily
+        actionable: !busy && !recording
+        onActivated: root.requestSettingsAction("delete-all")
       }
     }
   }

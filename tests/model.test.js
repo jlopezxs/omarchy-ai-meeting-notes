@@ -3,7 +3,17 @@
 const assert = require("assert")
 const Model = require("../Model.js")
 
+assert.strictEqual(Model.elide("short"), "short")
 assert.strictEqual(Model.formatRelativeTime(0), "")
+assert.strictEqual(Model.compactMarkdownHeadings("# Title\n\n## Section\n\n- item"), "### Title\n\n#### Section\n\n- item")
+assert.strictEqual(Model.compactMarkdownHeadings("### Sub\n\n###### Max"), "##### Sub\n\n###### Max")
+assert.strictEqual(Model.compactMarkdownHeadings("see #hashtag in a line"), "see #hashtag in a line")
+const preview = Model.markdownToPreviewHtml("# Title\n\n## Section\n\n- item", 13, 11)
+assert.ok(preview.indexOf("<b>Title</b>") >= 0)
+assert.ok(preview.indexOf("margin-left:10px") >= 0)
+assert.ok(preview.indexOf("margin-top:16px") >= 0)
+assert.ok(preview.indexOf("• item") >= 0)
+assert.ok(preview.indexOf("<b>Date:</b>") >= 0 || Model.markdownToPreviewHtml("- **Date:** today", 13, 11).indexOf("<b>Date:</b>") >= 0)
 assert.strictEqual(Model.formatRelativeTime(Math.floor(Date.now() / 1000) - 120, Math.floor(Date.now() / 1000)), "2 minutes ago")
 
 const filtered = Model.filterMeetings([
@@ -82,7 +92,7 @@ assert.strictEqual(Model.detailTabs(finishedNoNotes).length, 2)
 
 assert.strictEqual(
   Model.barTooltip({ recording: true, durationSecs: 125, startedAt: 0 }),
-  "Transcribing — click to open, middle-click to stop"
+  "Transcribing — click to open"
 )
 assert.strictEqual(Model.findMeetingByPath([{ path: "/tmp/a", title: "Sync" }], "/tmp/a").title, "Sync")
 assert.strictEqual(
@@ -108,10 +118,18 @@ assert.strictEqual(Model.parseState(JSON.stringify({ onboardingComplete: false }
 assert.strictEqual(Model.parseState(JSON.stringify({ skillInstalled: true })).skillInstalled, true)
 assert.strictEqual(Model.parseState(JSON.stringify({})).skillInstalled, false)
 assert.strictEqual(Model.skillInstallLabel(false), "Install globally")
-assert.strictEqual(Model.skillInstallLabel(true), "Reinstall globally")
+assert.strictEqual(Model.skillInstallLabel(true), "Already installed")
 assert.strictEqual(Model.skillInstallStatusText(false), "Not installed")
+assert.strictEqual(Model.skillInstallStatusText(true), "Already installed")
+assert.ok(Model.skillInstallTooltip(false).indexOf("terminal") >= 0)
+assert.ok(Model.skillInstallTooltip(true).indexOf("terminal") >= 0)
 assert.ok(Model.skillGithubInstallCommand().indexOf("jlopezxs/omarchy-meetings-notepad-ai") >= 0)
 assert.ok(Model.skillGithubInstallCommand().indexOf(" -g") >= 0)
+assert.ok(Model.skillGithubInstallCommand().indexOf("--yes") >= 0)
+assert.strictEqual(Model.defaultWidgetSettings().listMeetingsMax, 5)
+assert.strictEqual(Model.defaultWidgetSettings().notesDir, "")
+assert.strictEqual(Model.defaultWidgetSettings().whisperLanguage, "auto")
+assert.strictEqual(Model.defaultWidgetSettings().panelScreen, "list")
 
 assert.strictEqual(Model.normalizeListMeetingsMax(5), 5)
 assert.strictEqual(Model.normalizeListMeetingsMax(0), 1)
@@ -132,7 +150,7 @@ assert.strictEqual(Model.normalizeBool("true", false), true)
 assert.strictEqual(Model.normalizeBool("false", true), false)
 assert.strictEqual(Model.normalizeBool(undefined, true), true)
 
-assert.strictEqual(Model.meetingIcon(), "")
+assert.strictEqual(Model.meetingIcon(), "󰎞")
 assert.strictEqual(Model.liveTranscriptPreview({ liveTranscript: " **Me** hello" }), "**Me** hello")
 assert.strictEqual(Model.parseState(JSON.stringify({ speakerCount: 3 })).speakerCount, 3)
 
@@ -170,8 +188,22 @@ assert.strictEqual(Model.captureStatusVisible({ busy: true, busyLabel: "Thinking
 assert.strictEqual(Model.recordingStatusHeadline({ recordingThisMeeting: true }), "Recording")
 assert.strictEqual(Model.transcriptStatusHeadline({ recordingThisMeeting: true, liveTranscript: "Hi" }), "Live")
 assert.strictEqual(Model.transcriptStatusHeadline({ busy: true, busyLabel: "Generating summary…" }), "Summary")
+assert.strictEqual(Model.isGeneratingSummary({ busy: true, busyLabel: "Generating summary…" }), true)
+assert.strictEqual(Model.isGeneratingSummary({ summaryRefreshing: true }), true)
+assert.strictEqual(Model.isGeneratingSummary({ busy: true, busyLabel: "Exporting transcript…" }), false)
+assert.strictEqual(Model.summaryLoadingVisible({ busy: true, busyLabel: "Generating summary…", summary: "" }, "summary"), true)
+assert.strictEqual(Model.summaryLoadingVisible({ busy: true, busyLabel: "Generating summary…", summary: "Done" }, "summary"), false)
+assert.strictEqual(Model.summaryLoadingVisible({ busy: true, busyLabel: "Generating summary…" }, "transcript"), false)
+assert.strictEqual(Model.summaryLoadingTitle({ busy: true, busyLabel: "Generating summary…" }), "Generating summary")
+assert.strictEqual(Model.summaryLoadingCaption({ busy: true, busyLabel: "Generating summary…" }), "Generating summary…")
 assert.ok(Model.transcriptProgressRatio({ busy: true, busyLabel: "Exporting transcript…" }, 0, 30) > 0.5)
 assert.strictEqual(Model.recordingStatusDetail({ recordingThisMeeting: true, startedAt: 100, durationSecs: 0 }, 173), "01:13")
+assert.strictEqual(Model.recordingOpenPath({ recordingMeetingPath: "/tmp/live", meetingPath: "/tmp/other" }), "/tmp/live")
+assert.strictEqual(Model.recordingBannerTitle({
+  recordingMeetingPath: "/tmp/live",
+  title: "Selected",
+  meetings: [{ path: "/tmp/live", title: "Standup now" }]
+}), "Standup now")
 
 assert.strictEqual(Model.askAgentButtonLabel({ skillInstalled: false }), "Install Agent skill")
 assert.strictEqual(Model.askAgentButtonLabel({ skillInstalled: true }), "Ask Agent")
@@ -181,35 +213,45 @@ assert.strictEqual(Model.canAskAgent({ meetingFinished: true, skillInstalled: tr
 assert.strictEqual(Model.canAskAgent({ meetingFinished: true, skillInstalled: true, defaultAgent: "agent" }), true)
 assert.strictEqual(Model.canAskAgent({ meetingFinished: false }), false)
 assert.ok(Model.askAgentLaunchPrompt({ title: "Standup", startedAt: 0 }).indexOf("/omarchy-meetings Standup") === 0)
+assert.strictEqual(Model.askAgentSkillPrompt(), "/omarchy-meetings\n\n")
+assert.ok(Model.askAgentListTooltip({ skillInstalled: false }).indexOf("/omarchy-meetings") >= 0)
+assert.ok(Model.askAgentListTooltip({ skillInstalled: true, defaultAgent: "claude" }).indexOf("title") < 0)
 
-assert.strictEqual(Model.normalizeTag("#Standup"), "standup")
-assert.strictEqual(Model.normalizeTag("1:1"), "1-1")
-assert.deepStrictEqual(Model.normalizeTags("standup, 1-1, standup"), ["standup", "1-1"])
-assert.strictEqual(Model.tagChipLabel("standup"), "#standup")
-assert.strictEqual(Model.formatTagsPreview("standup, 1-1"), "#standup #1-1")
-assert.deepStrictEqual(Model.addMeetingTag(["standup"], "1-1"), ["standup", "1-1"])
-assert.deepStrictEqual(Model.removeMeetingTag(["standup", "1-1"], "standup"), ["1-1"])
-assert.strictEqual(Model.toggleTagFilterQuery("", "standup"), "#standup")
-assert.strictEqual(Model.toggleTagFilterQuery("#standup", "standup"), "")
-assert.strictEqual(Model.isTagFilterQuery("#standup"), true)
+const weekNow = 1755900000
+assert.strictEqual(Model.meetingStats([], weekNow).countLabel, "0")
+assert.strictEqual(Model.meetingStats([], weekNow).perDayLabel, "0")
 
-const tagged = [
-  { title: "Morning", id: "m", tags: ["standup"] },
-  { title: "Catch-up", id: "c", tags: ["1-1"] },
+const stats = Model.meetingStats([
+  { startedAt: weekNow - 86400, durationSecs: 600 },
+  { startedAt: weekNow, durationSecs: 1200 }
+], weekNow)
+assert.strictEqual(stats.countLabel, "2")
+assert.strictEqual(stats.totalLabel, "30m")
+assert.strictEqual(stats.avgLabel, "15m")
+assert.ok(stats.perDayLabel !== "")
+assert.strictEqual(Model.formatDurationShort(3720), "1h 2m")
+
+const searchable = [
+  { title: "Morning standup", id: "m", searchText: "" },
+  { title: "Catch-up", id: "c", searchText: "" },
   { title: "Also standup words", id: "x", searchText: "we talked about standup process" }
 ]
-assert.strictEqual(Model.filterMeetings(tagged, "#standup").length, 1)
-assert.strictEqual(Model.filterMeetings(tagged, "#standup")[0].id, "m")
-assert.strictEqual(Model.filterMeetings(tagged, "standup").length, 2)
-assert.deepStrictEqual(Model.uniqueMeetingTags(tagged), ["1-1", "standup"])
-assert.ok(Model.meetingListSubtitle({ startedAt: 0, durationSecs: 0, tags: ["standup"] }).indexOf("#standup") >= 0)
+assert.strictEqual(Model.filterMeetings(searchable, "standup").length, 2)
+assert.strictEqual(Model.filterMeetings(searchable, "catch").length, 1)
+assert.ok(Model.meetingListSubtitle({ startedAt: 0, durationSecs: 90, hasNotes: true }).indexOf("notes") >= 0)
+assert.ok(Model.meetingListSubtitle({ startedAt: 0, durationSecs: 0, tags: ["standup"] }).indexOf("#standup") < 0)
 
-const withTags = Model.parseState(JSON.stringify({
-  ok: true,
-  tags: ["Standup", "1:1"],
-  meetings: [{ title: "A", path: "/tmp/a", tags: ["standup"] }]
-}))
-assert.deepStrictEqual(withTags.tags, ["standup", "1-1"])
-assert.deepStrictEqual(withTags.meetings[0].tags, ["standup"])
+const copied = Model.buildCopyText({
+  title: "Standup",
+  startedAt: 0,
+  hasNotes: true,
+  notes: "Ship billing",
+  summary: "We shipped it",
+  transcript: "Hello from the call"
+}, "summary")
+assert.ok(copied.indexOf("Standup") >= 0)
+assert.ok(copied.indexOf("Ship billing") >= 0)
+assert.ok(copied.indexOf("We shipped it") >= 0)
+assert.ok(copied.indexOf("Hello from the call") >= 0)
 
 console.log("model.test.js: ok")

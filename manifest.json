@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jlopezxs.meetings",
   "name": "Meetings Notepad",
-  "version": "1.8.0",
+  "version": "0.2.0",
   "author": "jlopezxs",
   "license": "MIT",
   "description": "Granola-style meeting notes: capture desktop and mic audio, transcribe with Voxtype, summarize and ask questions with your default Omarchy agent.",
@@ -53,7 +53,7 @@
         "type": "enum",
         "label": "Default language",
         "options": ["auto", "es", "en", "fr", "de", "pt", "it"],
-        "defaultValue": "es",
+        "defaultValue": "auto",
         "description": "Whisper language for meetings. Use es/en for Spanish/English video or calls — avoids English hallucinations on non-English audio."
       },
       {

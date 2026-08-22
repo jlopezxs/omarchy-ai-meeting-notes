@@ -25,11 +25,9 @@ Item {
   readonly property int displayDurationSecs: recordingThisMeeting && state.startedAt > 0
     ? Math.max(state.durationSecs, nowSeconds - state.startedAt)
     : state.durationSecs
-  readonly property string liveTranscriptText: Model.liveTranscriptPreview(state)
-  readonly property int chunkSecondsSetting: Model.normalizeChunkSeconds(setting("chunkSeconds", 30))
-  readonly property string liveTranscriptWaitingText: Model.liveTranscriptWaitingText(state, nowSeconds, chunkSecondsSetting)
   readonly property string lastError: Model.formatUserError(state.error || (service ? service.lastError : ""))
   readonly property string headerTitle: Model.detailHeaderTitle(state, null, "Meeting")
+  readonly property int chunkSecondsSetting: Model.normalizeChunkSeconds(setting("chunkSeconds", 30))
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -192,13 +190,14 @@ Item {
 
         CaptureStatusBox {
           Layout.fillWidth: true
+          visible: Model.isSavingMeeting(root.state)
           iconText: "󰷈"
-          title: "TRANSCRIPT PROGRESS"
-          headline: Model.transcriptStatusHeadline(state)
-          showDot: false
+          title: "SAVING"
+          headline: Model.transcriptStatusHeadline(root.state)
+          showDot: true
           detail: ""
-          footer: Model.transcriptStatusFooter(state, nowSeconds, chunkSecondsSetting)
-          progress: Model.transcriptProgressRatio(state, nowSeconds, chunkSecondsSetting)
+          footer: Model.transcriptStatusFooter(root.state, nowSeconds, chunkSecondsSetting)
+          progress: Model.transcriptProgressRatio(root.state, nowSeconds, chunkSecondsSetting)
           foreground: root.foreground
           accent: Color.accent
           dim: root.dim
@@ -248,40 +247,6 @@ Item {
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         text: lastError
-      }
-
-      PanelSectionHeader {
-        Layout.fillWidth: true
-        visible: recordingThisMeeting || liveTranscriptText !== ""
-        text: liveTranscriptText !== "" ? "Live transcript" : "Live transcript · waiting"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-      }
-
-      Rectangle {
-        Layout.fillWidth: true
-        Layout.fillHeight: true
-        Layout.preferredHeight: Style.space(240)
-        visible: recordingThisMeeting || liveTranscriptText !== ""
-        radius: Style.cornerRadius
-        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-
-        ScrollView {
-          anchors.fill: parent
-          anchors.margins: Style.spacing.panelPadding
-          clip: true
-
-          TextArea {
-            readOnly: true
-            wrapMode: TextArea.Wrap
-            text: liveTranscriptText || liveTranscriptWaitingText
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            background: null
-          }
-        }
       }
 
       PanelSectionHeader {

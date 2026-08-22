@@ -10,7 +10,7 @@ BarWidget {
   moduleName: "jlopezxs.meetings"
 
   readonly property string icon: Model.meetingIcon()
-  readonly property string recordingIcon: "󰻃"
+  readonly property string recordingIcon: "󰻃" // nf-md-record-circle-outline
 
   readonly property var service: bar && bar.shell && typeof bar.shell.serviceFor === "function"
     ? bar.shell.serviceFor("jlopezxs.meetings")
@@ -77,10 +77,6 @@ BarWidget {
     if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
   }
 
-  function toggleRecording() {
-    if (service) service.toggleRecording()
-  }
-
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -122,31 +118,73 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.vertical ? "" : (root.recording ? root.recordingIcon : root.icon)
-    labelVisible: !root.vertical
+    text: root.recording ? root.recordingIcon : root.icon
+    labelVisible: false
     hasVisualContent: true
     dimmed: !root.service
     active: root.recording
+    fixedWidth: root.vertical ? -1 : Style.bar.iconSlot
+    fixedHeight: root.vertical ? Style.bar.iconSlot : -1
     tooltipText: root.detached
       ? "Meeting notepad is floating — click to focus"
       : Model.barTooltip(root.state)
 
     onPressed: function(b) {
-      if (b === Qt.MiddleButton) root.toggleRecording()
-      else root.togglePanel()
+      if (b === Qt.MiddleButton) return
+      root.togglePanel()
     }
 
-    Column {
-      visible: root.vertical
-      anchors.fill: parent
+    Rectangle {
+      visible: root.recording
+      anchors.centerIn: parent
+      width: Math.round(Math.min(parent.width, parent.height) * 0.78)
+      height: width
+      radius: width / 2
+      color: button.activeColor
 
-      OpticalGlyph {
-        width: button.width
-        height: Style.bar.iconSlot
-        text: root.recording ? root.recordingIcon : root.icon
-        fontFamily: button.fontFamily
-        fontSize: button.fontSize
-        color: root.recording ? (root.bar ? root.bar.urgent : Color.urgent) : button.foreground
+      SequentialAnimation on opacity {
+        running: root.recording
+        loops: Animation.Infinite
+        NumberAnimation { from: 0.08; to: 0.34; duration: 750; easing.type: Easing.InOutSine }
+        NumberAnimation { from: 0.34; to: 0.08; duration: 750; easing.type: Easing.InOutSine }
+      }
+    }
+
+    OpticalGlyph {
+      id: barGlyph
+      anchors.centerIn: parent
+      width: Style.bar.iconCanvas
+      height: Style.bar.iconCanvas
+      text: root.recording ? root.recordingIcon : root.icon
+      fontFamily: button.fontFamily
+      fontSize: Style.bar.iconFont
+      color: root.recording ? button.activeColor : button.foreground
+
+      SequentialAnimation on opacity {
+        running: root.recording
+        loops: Animation.Infinite
+        onRunningChanged: if (!running) barGlyph.opacity = 1
+        NumberAnimation { from: 1; to: 0.38; duration: 700; easing.type: Easing.InOutSine }
+        NumberAnimation { from: 0.38; to: 1; duration: 700; easing.type: Easing.InOutSine }
+      }
+    }
+
+    Rectangle {
+      visible: root.recording
+      width: Style.space(6)
+      height: Style.space(6)
+      radius: width / 2
+      color: button.activeColor
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.rightMargin: Style.space(1)
+      anchors.topMargin: Style.space(1)
+
+      SequentialAnimation on opacity {
+        running: root.recording
+        loops: Animation.Infinite
+        NumberAnimation { from: 1; to: 0.18; duration: 620; easing.type: Easing.InOutSine }
+        NumberAnimation { from: 0.18; to: 1; duration: 620; easing.type: Easing.InOutSine }
       }
     }
   }
