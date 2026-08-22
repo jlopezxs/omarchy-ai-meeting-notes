@@ -648,7 +648,7 @@ function listMeetingsMaxTooltip(max) {
 }
 
 var SKILL_NAME = "omarchy-meeting-notepad"
-var SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-ai-meetings-notes"
+var SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-ai-meeting-notes"
 
 function skillGithubSource() {
   return SKILL_GITHUB_SOURCE

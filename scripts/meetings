@@ -33,7 +33,7 @@ INDEX_FILENAME = "index.jsonl"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 SKILL_NAME = "omarchy-meeting-notepad"
 SKILL_NAME_LEGACY = "omarchy-meetings"
-SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-ai-meetings-notes"
+SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-ai-meeting-notes"
 SKILL_INSTALL_TIMEOUT_SEC = 180
 
 

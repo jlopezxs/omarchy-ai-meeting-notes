@@ -16,7 +16,7 @@ Markdown on disk, AI summary, and your own notes. Inspired by [Granola](https://
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/jlopezxs/omarchy-ai-meetings-notes.git --enable
+omarchy plugin add https://github.com/jlopezxs/omarchy-ai-meeting-notes.git --enable
 ```
 
 `--enable` puts it straight into the bar's right section. Without it, add it later via **Omarchy menu → Bar → Widgets**, or with:
@@ -119,12 +119,12 @@ The plugin ships a [skills.sh](https://www.skills.sh/) skill at `skills/omarchy-
 **From GitHub:**
 
 ```bash
-npx skills add jlopezxs/omarchy-ai-meetings-notes -g --skill omarchy-meeting-notepad --agent '*'
+npx skills add jlopezxs/omarchy-ai-meeting-notes -g --skill omarchy-meeting-notepad --agent '*'
 ```
 
-The skill lives at [`skills/omarchy-meeting-notepad`](https://github.com/jlopezxs/omarchy-ai-meetings-notes/tree/main/skills/omarchy-meeting-notepad) in the plugin repo.
+The skill lives at [`skills/omarchy-meeting-notepad`](https://github.com/jlopezxs/omarchy-ai-meeting-notes/tree/main/skills/omarchy-meeting-notepad) in the plugin repo.
 
-[![skills.sh](https://skills.sh/b/jlopezxs/omarchy-ai-meetings-notes)](https://skills.sh/jlopezxs/omarchy-ai-meetings-notes)
+[![skills.sh](https://skills.sh/b/jlopezxs/omarchy-ai-meeting-notes)](https://skills.sh/jlopezxs/omarchy-ai-meeting-notes)
 
 ## Requirements
 
