@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "id": "jlopezxs.meetings",
+  "name": "Meetings Notepad",
+  "version": "1.8.0",
+  "author": "jlopezxs",
+  "license": "MIT",
+  "description": "Granola-style meeting notes: capture desktop and mic audio, transcribe with Voxtype, summarize and ask questions with your default Omarchy agent.",
+  "kinds": [
+    "bar-widget",
+    "service"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml",
+    "service": "Service.qml"
+  },
+  "barWidget": {
+    "displayName": "Meetings",
+    "description": "Record meetings, live transcript, AI summary, and Q&A over your notes",
+    "category": "AI",
+    "aliases": ["meetings", "granola", "notepad", "transcribe"],
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {
+      "notesDir": "",
+      "chunkSeconds": 30,
+      "whisperLanguage": "auto",
+      "keepAudio": false,
+      "autoEnableVoxtypeMeeting": true,
+      "summaryPreprompt": "",
+      "listMeetingsMax": 5
+    },
+    "schema": [
+      {
+        "key": "listMeetingsMax",
+        "type": "integer",
+        "label": "Meetings per page",
+        "min": 1,
+        "max": 10,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "How many meetings to show per page in the list. Use the arrows to see older meetings."
+      },
+      {
+        "key": "notesDir",
+        "type": "path",
+        "label": "Notes folder",
+        "defaultValue": "",
+        "description": "Where meeting markdown is stored. Default: ~/.local/state/omarchy/meetings/"
+      },
+      {
+        "key": "whisperLanguage",
+        "type": "enum",
+        "label": "Default language",
+        "options": ["auto", "es", "en", "fr", "de", "pt", "it"],
+        "defaultValue": "es",
+        "description": "Whisper language for meetings. Use es/en for Spanish/English video or calls — avoids English hallucinations on non-English audio."
+      },
+      {
+        "key": "summaryPreprompt",
+        "type": "string",
+        "label": "Summary preprompt",
+        "defaultValue": "",
+        "description": "Extra instructions prepended to the AI summary prompt."
+      },
+      {
+        "key": "chunkSeconds",
+        "type": "integer",
+        "label": "Chunk duration (seconds)",
+        "min": 15,
+        "max": 120,
+        "step": 5,
+        "defaultValue": 30,
+        "description": "Written to Voxtype meeting config when a session starts."
+      },
+      {
+        "key": "keepAudio",
+        "type": "boolean",
+        "label": "Keep raw audio",
+        "defaultValue": false,
+        "description": "Retain Voxtype meeting audio files after transcription."
+      },
+      {
+        "key": "autoEnableVoxtypeMeeting",
+        "type": "boolean",
+        "label": "Auto-enable Voxtype meeting mode",
+        "defaultValue": true,
+        "description": "Ensure [meeting] is enabled in ~/.config/voxtype/config.toml before recording."
+      }
+    ]
+  }
+}

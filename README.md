@@ -1,16 +1,62 @@
-# Meetings Notepad for Omarchy
+<div align="center">
 
-Granola-style meeting notes on Omarchy: capture desktop and microphone audio with [Voxtype](https://voxtype.io/) meeting mode, live chunked transcription, markdown export, AI summary, and manual notes.
+# 📝 Meetings Notepad for Omarchy
 
-Inspired by [Granola](https://www.granola.ai/) — local, no meeting bot.
+> *"Granola-style notes — local, no meeting bot."*
+
+A **meeting notepad** for the **Omarchy** bar — capture desktop and microphone audio with [Voxtype](https://voxtype.io/),  
+live chunked transcription, Markdown on disk, AI summary, and your own notes. Inspired by [Granola](https://www.granola.ai/).
+
+<br>
+
+![Meetings Notepad for Omarchy preview](preview.png)
+
+</div>
 
 ## Install
+
+```bash
+omarchy plugin add https://github.com/jlopezxs/omarchy-ai-meetings-notes.git --enable
+```
+
+`--enable` puts it straight into the bar's right section. Without it, add it later via **Omarchy menu → Bar → Widgets**, or with:
+
+```bash
+omarchy plugin enable jlopezxs.meetings --section right
+```
+
+Or develop from a checkout:
 
 ```bash
 rm -rf ~/.config/omarchy/plugins/jlopezxs.meetings
 cp -r omarchy-meetings-notepad-ai ~/.config/omarchy/plugins/jlopezxs.meetings
 omarchy plugin enable jlopezxs.meetings --section right
 ```
+
+### Uninstall
+
+```bash
+omarchy plugin remove jlopezxs.meetings
+```
+
+---
+
+## ✨ Features
+
+
+| | Feature | Description |
+|:---:|:---|:---|
+| 🎙️ | **Capture** | Desktop + microphone via [Voxtype](https://voxtype.io/) meeting mode — nothing joins the call |
+| 📝 | **Live transcript** | Chunked Whisper output while the meeting is running |
+| ✨ | **AI summary** | Summarize with your default Omarchy agent when you stop |
+| 📋 | **Your notes** | Manual notes auto-saved next to the transcript |
+| 🔍 | **Search & tags** | Find by title, tags, notes, summary, or transcript (`#standup`) |
+| 📌 | **Float** | Pin the notepad as a picture-in-picture window on every workspace |
+| 📷 | **Camera autostart** | Optional: start when `/dev/video*` is in use, stop when the camera turns off |
+| 🤖 | **Agent skill** | `/omarchy-meetings` so any agent can read your notes ([skills.sh](https://www.skills.sh/)) |
+| 💾 | **Markdown on disk** | One folder per meeting — no cloud, no API |
+
+---
 
 ## First launch
 
@@ -22,55 +68,33 @@ On first open, a **3-step onboarding** walks you through:
 
 Progress is saved to `~/.local/state/omarchy/meetings/onboarding.json`.
 
-## Main screen
+## Using it
 
-After onboarding:
+**Search** past meetings by title, tags, notes, summary, and transcript. Type `#standup` or click a tag chip to show only that type.
 
-- **Search** past meetings by title, tags, notes, summary, and transcript. Type `#standup` or click a tag chip to show only that type.
-- **New meeting** — title, optional tags (`standup, 1-1`), then Create meeting (opens detail view)
-- **Past meetings** — paginated list with relative time (`2 hours ago`), duration, `#tags`; arrows move between pages
-- Tap a meeting to open the detail view
+**New meeting** — title, optional tags (`standup, 1-1`), then Create meeting.
 
-## Meeting detail
+**Past meetings** — paginated list with relative time (`2 hours ago`), duration, and `#tags`. Tap a meeting to open the detail view.
 
-### While the meeting is active (draft or transcribing)
+While a meeting is active (draft or transcribing):
 
-- **Start** — begins Voxtype transcription
-- **Stop** — ends the meeting and saves transcript + AI summary
-- **Your notes** — write manual notes below the controls (auto-saved)
-- Status shows **Transcribing · MM:SS** while active
-- **Settings** — gear icon in the header or the Settings row at the bottom of the list
+- **Start** begins Voxtype transcription; **Stop** ends the meeting and saves transcript + AI summary
+- **Your notes** auto-save below the controls
+- Status shows **Transcribing · MM:SS**; the bar widget shows a duration badge
+- Click the pin icon to **float** the notepad; **Dock** returns it to the bar panel
 
-During recording, the bar widget shows a duration badge and **Transcribing · MM:SS** in the tooltip.
+After you stop, the view switches to tabs: **Your notes** (once you have notes), **Summary**, and **Transcript**. The header has title, date/time, tags, **Add notes**, and a **Copy** menu (plain text or Markdown).
 
-Click the pin icon in the meeting header to **float** the notepad as a pinned window (stays on every workspace, like picture-in-picture). Click the bar calendar icon to focus it again, or **Dock** to return it to the bar panel.
-
-### After you stop
-
-The view switches to tabs:
-
-- **Your notes** — only if you wrote notes during the meeting
-- **Summary** — AI summary from the transcript
-- **Transcript** — full meeting transcript
-
-- Title, date/time, and **tags** in the header (add or click a chip to remove)
-- **Start / Stop meeting**
-- **Add notes** — creates `notes.md` (the “Your notes” tab appears once you save content)
-- **Copy** menu — plain text or Markdown (notes + summary + transcript)
-- Tabs: **Your notes** (hidden until notes exist), **Summary**, **Transcript**
-
-During recording, the transcript tab shows live chunked output.
-
-### Settings
+## ⚙️ Settings
 
 | Setting | Purpose |
 |---------|---------|
 | Notes folder | Where meetings are saved (default `~/.local/state/omarchy/meetings/`) |
-| Meetings per page | How many meetings fit on each list page (default 5). Older meetings are on the next pages. |
+| Meetings per page | How many meetings fit on each list page (default 5) |
 | Default language | Whisper language (`auto`, `es`, `en`, …) |
 | Summary preprompt | Extra instructions prepended to the AI summary |
-| Auto record when camera is active | Starts when `/dev/video*` is in use; stops when camera turns off |
-| Agent skill | Install `/omarchy-meetings` **globally** so any agent can read your notes ([skills.sh](https://www.skills.sh/)) |
+| Auto record when camera is active | Starts when `/dev/video*` is in use; stops when the camera turns off |
+| Agent skill | Install `/omarchy-meetings` **globally** so any agent can read your notes |
 
 ## Files per meeting
 
@@ -89,7 +113,7 @@ The plugin ships a [skills.sh](https://www.skills.sh/) skill at `skills/omarchy-
 
 **From Settings:** open the notepad → gear → **Install globally**. That runs the skills CLI with `-g --agent '*'` so every detected agent (Cursor, Claude Code, Codex, …) can use it.
 
-**From GitHub** (after the repo is published under `jlopezxs`):
+**From GitHub:**
 
 ```bash
 npx skills add jlopezxs/omarchy-meetings-notepad-ai -g
@@ -119,3 +143,13 @@ omarchy-shell shell call jlopezxs.meetings toggleRecording
 omarchy-shell shell call jlopezxs.meetings startRecording "Standup"
 omarchy-shell shell call jlopezxs.meetings stopRecording
 ```
+
+## Screenshots
+
+![Meeting detail](media/preview-2.png)
+
+## Attribution
+
+- Inspired by [Granola](https://www.granola.ai/) — local meeting notes, no bot in the call
+- Capture and transcription via [Voxtype](https://voxtype.io/) meeting mode
+- README intro style inspired by [One Dark Pro Darker](https://github.com/jlopezxs/omarchy-one-dark-pro-darker-theme)

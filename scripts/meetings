@@ -1,0 +1,1945 @@
+#!/usr/bin/env python3
+"""Meetings notepad helper for the Omarchy bar widget."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import select
+import shlex
+import shutil
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+import unicodedata
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+VOXTYPE_BIN = shutil.which("voxtype")
+OMARCHY_DEFAULT_AGENT = shutil.which("omarchy-default-agent") or "omarchy-default-agent"
+AGENT_FILE = Path.home() / ".config" / "omarchy" / "defaults" / "agent"
+VOXTYPE_CONFIG = Path.home() / ".config" / "voxtype" / "config.toml"
+VOXTYPE_MEETINGS_DB = Path.home() / ".local" / "share" / "voxtype" / "meetings" / "index.db"
+DEFAULT_NOTES_DIR = Path.home() / ".local" / "state" / "omarchy" / "meetings"
+ONBOARDING_FILE = Path.home() / ".local" / "state" / "omarchy" / "meetings" / "onboarding.json"
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+SKILL_NAME = "omarchy-meetings"
+SKILL_INSTALL_TIMEOUT_SEC = 180
+SKILL_MARKER_PATHS = (
+    Path.home() / ".agents" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".cursor" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".claude" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".codex" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".opencode" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".gemini" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".codeium" / "windsurf" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".windsurf" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".config" / "opencode" / "skills" / SKILL_NAME / "SKILL.md",
+    Path.home() / ".github" / "skills" / SKILL_NAME / "SKILL.md",
+)
+AGENT_TIMEOUT_SEC = 300
+POLL_INTERVAL_SEC = 1.0
+MEETINGS_CACHE: dict[str, Any] = {"generation": -1, "items": []}
+LIVE_CACHE: dict[str, Any] = {"meeting_id": "", "meeting_path": "", "chunk_count": -1, "text": ""}
+
+
+@dataclass
+class Settings:
+    notes_dir: str = ""
+    chunk_seconds: int = 30
+    whisper_language: str = "auto"
+    keep_audio: bool = False
+    auto_enable_voxtype_meeting: bool = True
+    summary_preprompt: str = ""
+
+
+@dataclass
+class Runtime:
+    settings: Settings = field(default_factory=Settings)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    selected_meeting_path: str = ""
+    worker_busy: bool = False
+    worker_label: str = ""
+    stop_poll: threading.Event = field(default_factory=threading.Event)
+    poll_thread: threading.Thread | None = None
+    last_duration_secs: int = 0
+    meetings_cache_generation: int = 0
+    recording_pending: bool = False
+    recording_meeting_path: str = ""
+    summary_worker_busy: bool = False
+    last_summary_chunk: int = -1
+    summary_pending_chunk: int = 0
+    skill_install_error: str = ""
+
+
+RUNTIME = Runtime()
+
+
+def emit(payload: dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def now_ts() -> int:
+    return int(time.time())
+
+
+def slugify(text: str) -> str:
+    value = unicodedata.normalize("NFKD", text)
+    value = value.encode("ascii", "ignore").decode("ascii")
+    value = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower())
+    value = re.sub(r"-+", "-", value).strip("-")
+    return value or "meeting"
+
+
+TAG_LIMIT = 8
+TAG_MAX_LEN = 32
+
+
+def normalize_tag(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = text.strip().lower().replace("#", "")
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    return text[:TAG_MAX_LEN].rstrip("-")
+
+
+def normalize_tags(value: Any) -> list[str]:
+    raw: list[str] = []
+    if isinstance(value, str):
+        raw = re.split(r"[,;\n]+", value)
+    elif isinstance(value, list):
+        for item in value:
+            raw.extend(re.split(r"[,;\n]+", str(item)))
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        tag = normalize_tag(item)
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        out.append(tag)
+        if len(out) >= TAG_LIMIT:
+            break
+    return out
+
+
+def notes_dir(settings: Settings | None = None) -> Path:
+    raw = (settings or RUNTIME.settings).notes_dir.strip()
+    if raw:
+        return Path(os.path.expanduser(raw))
+    return DEFAULT_NOTES_DIR
+
+
+def ensure_notes_dir(settings: Settings | None = None) -> tuple[bool, str]:
+    folder = notes_dir(settings)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        return True, ""
+    except OSError as exc:
+        return False, f"Cannot create notes folder ({folder}): {exc}"
+
+
+def run(
+    cmd: list[str],
+    *,
+    input_text: str | None = None,
+    cwd: Path | None = None,
+    timeout: float | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        cwd=str(cwd) if cwd else None,
+        timeout=timeout,
+        check=check,
+    )
+
+
+def resolve_agent_binary(agent: str) -> str:
+    name = agent.strip().lower()
+    if name == "agent":
+        return shutil.which("agent") or "agent"
+    return name
+
+
+def read_default_agent() -> str:
+    agent = ""
+    if Path(OMARCHY_DEFAULT_AGENT).exists() or shutil.which(OMARCHY_DEFAULT_AGENT):
+        try:
+            result = run([OMARCHY_DEFAULT_AGENT], timeout=10)
+            agent = result.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            agent = ""
+    if not agent and AGENT_FILE.is_file():
+        agent = AGENT_FILE.read_text(encoding="utf-8").strip()
+    if not agent:
+        return ""
+    return agent.strip().lower()
+
+
+def voxtype_installed() -> bool:
+    return bool(VOXTYPE_BIN)
+
+
+def onboarding_complete() -> bool:
+    if not ONBOARDING_FILE.is_file():
+        return False
+    try:
+        data = json.loads(ONBOARDING_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return data.get("complete") is True
+
+
+def mark_onboarding_complete() -> None:
+    ONBOARDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ONBOARDING_FILE.write_text(
+        json.dumps({"complete": True, "completedAt": now_ts()}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def skill_dir() -> Path:
+    return PLUGIN_ROOT / "skills" / SKILL_NAME
+
+
+def skill_install_error_text(stdout: str, stderr: str) -> str:
+    combined = (stderr or stdout or "npx skills add failed").strip()
+    lines = [line.strip() for line in combined.splitlines() if line.strip()]
+    useful = [line for line in lines if not line.lower().startswith("npm warn")]
+    if useful:
+        return "\n".join(useful[-8:])
+    return combined[-800:]
+
+
+def skill_is_installed() -> bool:
+    for marker in SKILL_MARKER_PATHS:
+        if marker.is_file() or marker.is_symlink():
+            return True
+    return False
+
+
+def install_meetings_skill() -> tuple[bool, str]:
+    source = skill_dir()
+    if not (source / "SKILL.md").is_file():
+        return False, f"Skill not found at {source}"
+
+    command = (
+        "npx --yes skills add "
+        f"{shlex.quote(str(PLUGIN_ROOT))} "
+        f"-g --skill {shlex.quote(SKILL_NAME)} --agent '*' -y"
+    )
+    try:
+        result = run(["bash", "-lc", command], timeout=SKILL_INSTALL_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        return False, "Skill install timed out. Check your network and try again."
+    except OSError as exc:
+        return False, f"Could not run npx skills: {exc}"
+
+    if result.returncode != 0:
+        return False, skill_install_error_text(result.stdout, result.stderr)
+
+    if not skill_is_installed():
+        return False, "Skill install finished but no global agent copy was found"
+    return True, ""
+
+
+def cmd_install_skill(_payload: dict[str, Any]) -> None:
+    def work() -> None:
+        RUNTIME.skill_install_error = ""
+        ok, message = install_meetings_skill()
+        if not ok:
+            RUNTIME.skill_install_error = message
+            return
+        RUNTIME.skill_install_error = ""
+
+    worker_run("Installing agent skill…", work)
+
+
+def voxtype_meeting_enabled() -> bool:
+    if not VOXTYPE_CONFIG.is_file():
+        return False
+    text = VOXTYPE_CONFIG.read_text(encoding="utf-8")
+    match = re.search(r"(?ms)^\[meeting\]\s*(.*?)(?=^\[|\Z)", text)
+    if not match:
+        return False
+    section = match.group(1)
+    enabled = re.search(r"(?m)^\s*enabled\s*=\s*(true|false)", section)
+    return enabled is not None and enabled.group(1).lower() == "true"
+
+
+def whisper_model_for_language(language: str) -> str:
+    lang = language.strip().lower() or "auto"
+    if lang == "en":
+        return "base.en"
+    return "base"
+
+
+def restart_voxtype_daemon() -> bool:
+    if not shutil.which("systemctl"):
+        return False
+    for unit in ("voxtype.service", "voxtype"):
+        try:
+            result = run(["systemctl", "--user", "restart", unit], timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode != 0:
+            continue
+        time.sleep(1.5)
+        return True
+    return False
+
+
+def ensure_voxtype_meeting_config(settings: Settings) -> tuple[bool, str, bool]:
+    if not voxtype_installed():
+        return False, "Voxtype is not installed. Run: omarchy-voxtype-install", False
+
+    if not settings.auto_enable_voxtype_meeting:
+        if not voxtype_meeting_enabled():
+            return False, "Enable meeting mode in ~/.config/voxtype/config.toml ([meeting] enabled = true)", False
+        return True, "", False
+
+    VOXTYPE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    previous = VOXTYPE_CONFIG.read_text(encoding="utf-8") if VOXTYPE_CONFIG.is_file() else ""
+    was_enabled = voxtype_meeting_enabled()
+    text = previous
+
+    if "[meeting]" not in text:
+        text = text.rstrip() + "\n\n[meeting]\nenabled = true\n"
+    else:
+        text = re.sub(
+            r"(?ms)(^\[meeting\]\s*)(.*?)(?=^\[|\Z)",
+            lambda m: m.group(1)
+            + (
+                re.sub(
+                    r"(?m)^\s*enabled\s*=\s*(true|false)",
+                    "enabled = true",
+                    m.group(2),
+                    count=1,
+                )
+                if re.search(r"(?m)^\s*enabled\s*=", m.group(2))
+                else m.group(2).rstrip() + "\nenabled = true\n"
+            ),
+            text,
+            count=1,
+        )
+
+    def upsert(section: str, key: str, value: str) -> None:
+        nonlocal text
+        pattern = rf"(?ms)(^\[{re.escape(section)}\]\s*)(.*?)(?=^\[|\Z)"
+        match = re.search(pattern, text)
+        if not match:
+            text = text.rstrip() + f"\n\n[{section}]\n{key} = {value}\n"
+            return
+        body = match.group(2)
+        line = f"{key} = {value}"
+        if re.search(rf"(?m)^\s*{re.escape(key)}\s*=", body):
+            body = re.sub(rf"(?m)^\s*{re.escape(key)}\s*=.*$", line, body, count=1)
+        else:
+            body = body.rstrip() + "\n" + line + "\n"
+        text = text[: match.start()] + match.group(1) + body + text[match.end() :]
+
+    upsert("meeting", "chunk_duration_secs", str(max(15, min(120, settings.chunk_seconds))))
+    upsert("meeting", "retain_audio", "true" if settings.keep_audio else "false")
+    upsert("meeting.audio", "loopback_device", '"auto"')
+    upsert("meeting.audio", "mic_device", '"default"')
+    upsert("meeting.diarization", "enabled", "true")
+    upsert("meeting.diarization", "backend", '"simple"')
+    upsert("meeting.diarization", "max_speakers", "10")
+    language = settings.whisper_language.strip() or "auto"
+    upsert("whisper", "language", json.dumps(language))
+    upsert("whisper", "model", json.dumps(whisper_model_for_language(language)))
+    upsert("whisper", "translate", "false")
+    upsert("audio", "pause_media", "false")
+
+    updated = text.rstrip() + "\n"
+    config_changed = updated != previous.rstrip() + "\n" if previous else True
+    needs_daemon_restart = config_changed or not was_enabled
+    VOXTYPE_CONFIG.write_text(updated, encoding="utf-8")
+    if needs_daemon_restart:
+        restart_voxtype_daemon()
+    return True, "", needs_daemon_restart
+
+
+def invalidate_meetings_cache() -> None:
+    RUNTIME.meetings_cache_generation += 1
+    MEETINGS_CACHE["items"] = []
+
+
+def invalidate_live_cache() -> None:
+    LIVE_CACHE["meeting_id"] = ""
+    LIVE_CACHE["meeting_path"] = ""
+    LIVE_CACHE["chunk_count"] = -1
+    LIVE_CACHE["text"] = ""
+
+
+def meeting_voxtype_id(folder: Path) -> str:
+    meta_path = folder / "meta.json"
+    if not meta_path.is_file():
+        return ""
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return ""
+    return str(meta.get("voxtypeId") or "")
+
+
+def is_selected_meeting_recording(selected_path: str, active: dict[str, Any] | None) -> bool:
+    if not selected_path:
+        return False
+    if RUNTIME.recording_meeting_path and selected_path == RUNTIME.recording_meeting_path:
+        return bool(active) or RUNTIME.recording_pending
+    if not active:
+        return False
+    linked_id = meeting_voxtype_id(Path(selected_path))
+    active_id = str(active.get("id") or "")
+    return bool(linked_id and active_id and linked_id == active_id)
+
+
+def clear_live_artifacts(folder: Path) -> None:
+    live_path = folder / "live-transcript.md"
+    if live_path.is_file():
+        live_path.unlink()
+
+
+def persist_live_transcript(folder: Path, text: str) -> None:
+    if folder.is_dir() and text.strip():
+        (folder / "live-transcript.md").write_text(text.strip() + "\n", encoding="utf-8")
+
+
+def wait_for_active_meeting(timeout: float = 3.0) -> dict[str, Any] | None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        active = query_active_meeting()
+        if active:
+            return active
+        time.sleep(0.15)
+    return None
+
+
+def wait_for_stopped_meeting(meeting_id: str, timeout: float = 30.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if query_active_meeting():
+            time.sleep(0.2)
+            continue
+        if not VOXTYPE_MEETINGS_DB.is_file():
+            return True
+        try:
+            conn = sqlite3.connect(VOXTYPE_MEETINGS_DB)
+            row = conn.execute(
+                "SELECT status, ended_at FROM meetings WHERE id = ?",
+                (meeting_id,),
+            ).fetchone()
+            conn.close()
+        except sqlite3.Error:
+            return True
+        if row and str(row[0]) != "active":
+            return True
+        time.sleep(0.2)
+    return not query_active_meeting()
+
+
+def request_voxtype_meeting_start(title: str) -> tuple[bool, str]:
+    if not VOXTYPE_BIN:
+        return False, "Voxtype is not installed"
+    result = run([VOXTYPE_BIN, "meeting", "start", "--title", title], timeout=30)
+    if result.returncode == 0:
+        return True, ""
+    detail = (result.stderr or result.stdout or "Could not start meeting").strip()
+    return False, detail
+
+
+def resolve_voxtype_meeting_id(
+    active: dict[str, Any] | None,
+    target_folder: Path | None,
+) -> str:
+    meeting_id = str(active.get("id") or "") if active else ""
+    if meeting_id:
+        return meeting_id
+    if target_folder and target_folder.is_dir():
+        meta_path = target_folder / "meta.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                meta = {}
+            meeting_id = str(meta.get("voxtypeId") or "")
+            if meeting_id:
+                return meeting_id
+    if not VOXTYPE_MEETINGS_DB.is_file():
+        return ""
+    try:
+        conn = sqlite3.connect(VOXTYPE_MEETINGS_DB)
+        row = conn.execute(
+            "SELECT id FROM meetings ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return ""
+    return str(row[0]) if row else ""
+
+
+def link_active_meeting_to_folder(folder: Path, active: dict[str, Any]) -> None:
+    meta_path = folder / "meta.json"
+    meta: dict[str, Any] = {}
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            meta = {}
+    meta["status"] = "recording"
+    meta["voxtypeId"] = str(active.get("id") or "")
+    if active.get("started_at"):
+        meta["startedAt"] = int(active.get("started_at") or meta.get("startedAt") or now_ts())
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    RUNTIME.recording_meeting_path = str(folder)
+    clear_live_artifacts(folder)
+    invalidate_live_cache()
+
+
+def query_active_meeting() -> dict[str, Any] | None:
+    if not VOXTYPE_MEETINGS_DB.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(VOXTYPE_MEETINGS_DB)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT id, title, started_at, ended_at, duration_secs, status, chunk_count, storage_path "
+            "FROM meetings WHERE status = 'active' ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    return dict(row)
+
+
+def voxtype_export(meeting_id: str, output: Path | None = None) -> str:
+    if not VOXTYPE_BIN:
+        return ""
+    cmd = [
+        VOXTYPE_BIN,
+        "meeting",
+        "export",
+        meeting_id,
+        "--format",
+        "markdown",
+        "--speakers",
+        "--timestamps",
+        "--metadata",
+    ]
+    if output:
+        cmd.extend(["--output", str(output)])
+    try:
+        result = run(cmd, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return result.stdout.strip() or result.stderr.strip()
+    text = output.read_text(encoding="utf-8") if output and output.is_file() else result.stdout.strip()
+    return normalize_speaker_labels(text)
+
+
+def voxtype_export_json(meeting_id: str) -> dict[str, Any]:
+    if not VOXTYPE_BIN:
+        return {}
+    cmd = [
+        VOXTYPE_BIN,
+        "meeting",
+        "export",
+        meeting_id,
+        "--format",
+        "json",
+        "--speakers",
+        "--timestamps",
+    ]
+    try:
+        result = run(cmd, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    raw = result.stdout.strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def meeting_transcript_payload(meeting_id: str) -> dict[str, Any]:
+    payload = voxtype_export_json(meeting_id)
+    if payload.get("segments"):
+        return payload
+    if not VOXTYPE_MEETINGS_DB.is_file():
+        return payload
+    try:
+        conn = sqlite3.connect(VOXTYPE_MEETINGS_DB)
+        row = conn.execute("SELECT storage_path FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return payload
+    if not row or not row[0]:
+        return payload
+    transcript_path = Path(str(row[0])) / "transcript.json"
+    if not transcript_path.is_file():
+        return payload
+    try:
+        stored = json.loads(transcript_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return payload
+    return stored if isinstance(stored, dict) else payload
+
+
+def transcript_segments(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    segments = payload.get("segments")
+    if isinstance(segments, list):
+        return [segment for segment in segments if isinstance(segment, dict)]
+    transcript = payload.get("transcript")
+    if isinstance(transcript, dict):
+        nested = transcript.get("segments")
+        if isinstance(nested, list):
+            return [segment for segment in nested if isinstance(segment, dict)]
+    if isinstance(transcript, list):
+        return [segment for segment in transcript if isinstance(segment, dict)]
+    return []
+
+
+def speaker_key(segment: dict[str, Any]) -> str:
+    for field in ("speaker_id", "speaker", "speaker_num", "speaker_label", "label"):
+        value = segment.get(field)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def speaker_source(segment: dict[str, Any]) -> str:
+    return str(segment.get("source") or segment.get("audio_source") or "").strip().lower()
+
+
+def is_me_speaker(segment: dict[str, Any]) -> bool:
+    source = speaker_source(segment)
+    if source in {"microphone", "mic"}:
+        return True
+    label = str(segment.get("speaker_label") or segment.get("label") or speaker_key(segment)).strip().lower()
+    return label in {"you", "me"}
+
+
+def voxtype_label(meeting_id: str, speaker_id: str, label: str) -> None:
+    if not VOXTYPE_BIN or not meeting_id or not speaker_id:
+        return
+    run([VOXTYPE_BIN, "meeting", "label", meeting_id, speaker_id, label], timeout=30)
+
+
+def apply_attendee_labels(meeting_id: str) -> None:
+    segments = transcript_segments(meeting_transcript_payload(meeting_id))
+    if not segments:
+        return
+
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for segment in segments:
+        key = speaker_key(segment)
+        if not key:
+            continue
+        if key not in grouped:
+            grouped[key] = {
+                "segments": 0,
+                "mic_segments": 0,
+                "label": str(segment.get("speaker_label") or segment.get("label") or key),
+                "source": speaker_source(segment),
+            }
+            order.append(key)
+        grouped[key]["segments"] += 1
+        if speaker_source(segment) in {"microphone", "mic"}:
+            grouped[key]["mic_segments"] += 1
+
+    if not grouped:
+        return
+
+    me_key = ""
+    for key in order:
+        info = grouped[key]
+        label = info["label"].strip().lower()
+        if info["mic_segments"] > 0 or label in {"you", "me"} or info["source"] in {"microphone", "mic"}:
+            me_key = key
+            break
+
+    if me_key:
+        voxtype_label(meeting_id, me_key, "Me")
+
+    attendee_num = 1
+    for key in order:
+        if key == me_key:
+            continue
+        voxtype_label(meeting_id, key, f"Attendee {attendee_num}")
+        attendee_num += 1
+
+
+def normalize_speaker_labels(text: str) -> str:
+    if not text.strip():
+        return text
+
+    normalized = text
+    normalized = re.sub(r"\*\*You\*\*", "**Me**", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"(?<!\*)\bYou\b(?=\s*[:：])", "Me", normalized)
+    normalized = re.sub(r"\*\*Remote\*\*", "**Attendee 1**", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"^### Remote\s*$", "### Attendee 1", normalized, flags=re.MULTILINE | re.IGNORECASE)
+    normalized = re.sub(r"^### You\s*$", "### Me", normalized, flags=re.MULTILINE | re.IGNORECASE)
+    normalized = re.sub(r"(\*\*Speakers:\*\*\s*)Remote\b", r"\1Attendee 1", normalized, flags=re.IGNORECASE)
+
+    speaker_ids: list[str] = []
+    for match in re.finditer(r"\*\*(SPEAKER_\d+|Speaker\s+\d+)\*\*", normalized, flags=re.IGNORECASE):
+        token = match.group(1)
+        if token not in speaker_ids:
+            speaker_ids.append(token)
+
+    attendee_num = 1
+    for token in speaker_ids:
+        replacement = f"Attendee {attendee_num}"
+        normalized = re.sub(rf"\*\*{re.escape(token)}\*\*", f"**{replacement}**", normalized, flags=re.IGNORECASE)
+        attendee_num += 1
+
+    return normalized
+
+
+def count_distinct_speakers(text: str) -> int:
+    if not text.strip():
+        return 0
+    labels = set()
+    for match in re.finditer(r"\*\*([^*]+)\*\*", text):
+        label = match.group(1).strip()
+        if label.lower() in {"metadata", "summary"}:
+            continue
+        labels.add(label.lower())
+    return len(labels)
+
+
+def live_transcript_is_empty(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return True
+    if re.search(r"\*\*Word Count:\*\*\s*0\b", value) and re.search(r"\*\*Segments:\*\*\s*0\b", value):
+        return True
+    if "## Transcript" in value:
+        body = value.split("## Transcript", 1)[-1].strip()
+        if not body:
+            return True
+    return False
+
+
+def format_timestamp_ms(ms: Any) -> str:
+    try:
+        total = max(0, int(ms) // 1000)
+    except (TypeError, ValueError):
+        total = 0
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def segment_map_key(segment: dict[str, Any]) -> str:
+    key = speaker_key(segment) or speaker_source(segment)
+    if key:
+        return key
+    return "mic" if is_me_speaker(segment) else "remote"
+
+
+def build_live_speaker_map(segments: list[dict[str, Any]]) -> dict[str, str]:
+    me_keys: list[str] = []
+    other_keys: list[str] = []
+    for segment in segments:
+        key = segment_map_key(segment)
+        if is_me_speaker(segment):
+            if key not in me_keys:
+                me_keys.append(key)
+        elif key not in other_keys:
+            other_keys.append(key)
+    mapping = {key: "Me" for key in me_keys}
+    for index, key in enumerate(other_keys, start=1):
+        mapping[key] = f"Attendee {index}"
+    return mapping
+
+
+def speaker_display_name(segment: dict[str, Any], mapping: dict[str, str]) -> str:
+    key = segment_map_key(segment)
+    if key in mapping:
+        return mapping[key]
+    if is_me_speaker(segment):
+        return "Me"
+    return "Attendee 1"
+
+
+def segments_to_live_markdown(segments: list[dict[str, Any]]) -> str:
+    if not segments:
+        return ""
+    mapping = build_live_speaker_map(segments)
+    lines: list[str] = []
+    for segment in segments:
+        text = str(segment.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = speaker_display_name(segment, mapping)
+        start = segment.get("start_ms", segment.get("startMs", 0))
+        lines.append(f"**{speaker}** *[{format_timestamp_ms(start)}]* {text}")
+    return "\n\n".join(lines)
+
+
+def stored_transcript_payload(meeting_id: str, storage_path: str = "") -> dict[str, Any]:
+    path = Path(storage_path) if storage_path else None
+    if path is None or not path.is_dir():
+        if not meeting_id or not VOXTYPE_MEETINGS_DB.is_file():
+            return {}
+        try:
+            conn = sqlite3.connect(VOXTYPE_MEETINGS_DB)
+            row = conn.execute(
+                "SELECT storage_path FROM meetings WHERE id = ?",
+                (meeting_id,),
+            ).fetchone()
+            conn.close()
+        except sqlite3.Error:
+            return {}
+        if not row or not row[0]:
+            return {}
+        path = Path(str(row[0]))
+    transcript_path = path / "transcript.json"
+    if not transcript_path.is_file():
+        return {}
+    try:
+        stored = json.loads(transcript_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def transcript_json_mtime(storage_path: str) -> float:
+    if not storage_path:
+        return 0.0
+    try:
+        return (Path(storage_path) / "transcript.json").stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def live_transcript_for(
+    meeting_id: str,
+    chunk_count: int,
+    meeting_path: str = "",
+    storage_path: str = "",
+) -> str:
+    if not meeting_id:
+        return ""
+    payload = stored_transcript_payload(meeting_id, storage_path)
+    segments = transcript_segments(payload)
+    text = segments_to_live_markdown(segments)
+    cache_key = len(segments) if segments else int(chunk_count or 0)
+    if live_transcript_is_empty(text):
+        cached = cached_live_transcript(meeting_id, meeting_path)
+        if cached and not live_transcript_is_empty(cached):
+            return cached
+        text = ""
+    elif (
+        LIVE_CACHE["meeting_id"] == meeting_id
+        and LIVE_CACHE.get("meeting_path") == meeting_path
+        and LIVE_CACHE["chunk_count"] == cache_key
+        and LIVE_CACHE["text"]
+        and not live_transcript_is_empty(str(LIVE_CACHE["text"]))
+    ):
+        return str(LIVE_CACHE["text"])
+    LIVE_CACHE["meeting_id"] = meeting_id
+    LIVE_CACHE["meeting_path"] = meeting_path
+    LIVE_CACHE["chunk_count"] = cache_key
+    LIVE_CACHE["text"] = text
+    if meeting_path and text:
+        persist_live_transcript(Path(meeting_path), text)
+    return text
+
+
+def cached_live_transcript(meeting_id: str, meeting_path: str = "") -> str:
+    if not meeting_id:
+        return ""
+    if LIVE_CACHE["meeting_id"] != meeting_id:
+        return ""
+    if meeting_path and LIVE_CACHE.get("meeting_path") not in {"", meeting_path}:
+        return ""
+    return str(LIVE_CACHE.get("text") or "")
+
+
+def read_notes(folder: Path) -> tuple[str, bool]:
+    notes_path = folder / "notes.md"
+    if not notes_path.is_file():
+        return "", False
+    text = notes_path.read_text(encoding="utf-8")
+    return text, bool(text.strip())
+
+
+def read_optional_text(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def meeting_search_text(folder: Path, title: str, notes: str, tags: list[str] | None = None) -> str:
+    parts = [title, notes]
+    for tag in tags or []:
+        parts.append("#" + tag)
+        parts.append(tag)
+    for name in ("summary.md", "transcript.md", "live-transcript.md"):
+        parts.append(read_optional_text(folder / name))
+    return "\n".join(part for part in parts if part).strip()
+
+
+def read_meeting_files(folder: Path) -> dict[str, Any]:
+    summary = ""
+    transcript = ""
+    notes, has_notes = read_notes(folder)
+    summary_path = folder / "summary.md"
+    transcript_path = folder / "transcript.md"
+    if summary_path.is_file():
+        summary = summary_path.read_text(encoding="utf-8")
+    if transcript_path.is_file():
+        transcript = transcript_path.read_text(encoding="utf-8")
+    meta: dict[str, Any] = {}
+    meta_path = folder / "meta.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            meta = {}
+    return {
+        "summary": summary,
+        "transcript": transcript,
+        "notes": notes,
+        "hasNotes": has_notes,
+        "title": str(meta.get("title") or folder.name),
+        "startedAt": int(meta.get("startedAt") or 0),
+        "endedAt": int(meta.get("endedAt") or 0),
+        "durationSecs": int(meta.get("durationSecs") or 0),
+        "status": str(meta.get("status") or ""),
+        "tags": normalize_tags(meta.get("tags")),
+    }
+
+
+def is_meeting_folder(folder: Path, settings: Settings | None = None) -> bool:
+    root = notes_dir(settings).resolve()
+    try:
+        folder.resolve().relative_to(root)
+    except ValueError:
+        return False
+    if not folder.is_dir():
+        return False
+    return (folder / "meta.json").is_file()
+
+
+def delete_meeting_folder(folder: Path, settings: Settings) -> tuple[bool, str]:
+    if not is_meeting_folder(folder, settings):
+        return False, "Meeting not found"
+    folder_path = str(folder.resolve())
+    active = query_active_meeting()
+    if is_selected_meeting_recording(folder_path, active):
+        return False, "Stop transcribing before deleting this meeting"
+    if folder_path == RUNTIME.recording_meeting_path and (active or RUNTIME.recording_pending):
+        return False, "Stop transcribing before deleting this meeting"
+
+    voxtype_id = meeting_voxtype_id(folder)
+    if voxtype_id and VOXTYPE_BIN:
+        run([VOXTYPE_BIN, "meeting", "delete", voxtype_id, "--force"], timeout=60)
+
+    shutil.rmtree(folder)
+    if RUNTIME.selected_meeting_path == folder_path:
+        RUNTIME.selected_meeting_path = ""
+    if RUNTIME.recording_meeting_path == folder_path:
+        RUNTIME.recording_meeting_path = ""
+    invalidate_meetings_cache()
+    invalidate_live_cache()
+    return True, ""
+
+
+def cmd_delete_meeting(payload: dict[str, Any]) -> None:
+    settings = RUNTIME.settings
+    path = str(payload.get("path") or RUNTIME.selected_meeting_path or "").strip()
+    if not path:
+        emit({**build_state(settings), "ok": False, "error": "Select a meeting first"})
+        return
+    if not path.startswith("/"):
+        path = str(notes_dir(settings) / path)
+    folder = Path(path)
+    ok, message = delete_meeting_folder(folder, settings)
+    if not ok:
+        emit({**build_state(settings), "ok": False, "error": message})
+        return
+    publish_state(settings)
+
+
+def scan_saved_meetings(settings: Settings) -> list[dict[str, Any]]:
+    root = notes_dir(settings)
+    if not root.is_dir():
+        return []
+    generation = RUNTIME.meetings_cache_generation
+    if MEETINGS_CACHE.get("generation") == generation and MEETINGS_CACHE.get("items"):
+        return list(MEETINGS_CACHE["items"])
+
+    meetings: list[dict[str, Any]] = []
+    for entry in sorted(root.iterdir(), reverse=True):
+        if not entry.is_dir():
+            continue
+        meta_path = entry / "meta.json"
+        meta: dict[str, Any] = {}
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                meta = {}
+        notes, has_notes = read_notes(entry)
+        title = str(meta.get("title") or entry.name)
+        tags = normalize_tags(meta.get("tags"))
+        status = str(meta.get("status") or "")
+        has_transcript = (entry / "transcript.md").is_file()
+        is_completed = status == "completed" or has_transcript
+        is_draft = not is_completed and status in {"draft", "recording"}
+        is_recording = status == "recording" and not has_transcript
+        meetings.append(
+            {
+                "id": entry.name,
+                "path": str(entry),
+                "title": title,
+                "startedAt": int(meta.get("startedAt") or 0),
+                "endedAt": int(meta.get("endedAt") or 0),
+                "durationSecs": int(meta.get("durationSecs") or 0),
+                "voxtypeId": str(meta.get("voxtypeId") or ""),
+                "hasSummary": (entry / "summary.md").is_file(),
+                "hasTranscript": has_transcript,
+                "hasNotes": has_notes,
+                "isDraft": is_draft,
+                "isRecording": is_recording,
+                "tags": tags,
+                "searchText": meeting_search_text(entry, title, notes, tags),
+            }
+        )
+    MEETINGS_CACHE["generation"] = generation
+    MEETINGS_CACHE["items"] = meetings
+    return meetings
+
+
+def agent_print_command(agent: str, prompt: str) -> list[str]:
+    agent = agent.strip().lower()
+    if not agent:
+        raise RuntimeError("No default agent configured. Run: omarchy default agent <name>")
+
+    if agent == "claude":
+        return [
+            "claude",
+            "-p",
+            "--output-format",
+            "text",
+            "--permission-mode",
+            "bypassPermissions",
+            prompt,
+        ]
+    if agent == "codex":
+        return ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", prompt]
+    if agent == "opencode":
+        return ["opencode", "run", prompt]
+    if agent == "crush":
+        return ["crush", "run", prompt]
+    if agent == "gemini":
+        return ["gemini", "--yolo", "--prompt-interactive", prompt]
+    if agent == "copilot":
+        return ["copilot", "--allow-all", "--interactive", prompt]
+    if agent == "omp":
+        return ["omp", "--auto-approve", prompt]
+    if agent == "pi":
+        return ["pi", prompt]
+    if agent == "grok":
+        return ["grok", "--permission-mode", "bypassPermissions", prompt]
+    if agent == "agent":
+        return [
+            resolve_agent_binary("agent"),
+            "-p",
+            "--output-format",
+            "text",
+            "--force",
+            prompt,
+        ]
+    raise RuntimeError(
+        f"Unsupported default agent for print mode: {agent}. "
+        "Supported: agent, claude, codex, opencode, crush, gemini, copilot, omp, pi, grok"
+    )
+
+
+def run_agent_prompt(prompt: str, cwd: Path) -> str:
+    agent = read_default_agent()
+    cmd = agent_print_command(agent, prompt)
+    binary = cmd[0]
+    if shutil.which(binary) is None:
+        raise RuntimeError(f"{binary} is not installed (default agent: {agent})")
+    result = run(cmd, cwd=cwd, timeout=AGENT_TIMEOUT_SEC)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(detail or f"{binary} exited {result.returncode}")
+    return result.stdout.strip()
+
+
+def summary_prompt(settings: Settings) -> str:
+    base = (
+        "You are a meeting notes assistant. Read transcript.md in this directory. "
+        "Write summary.md with: a short title line, key decisions, action items "
+        "(owner if known), and next steps. Use markdown headings and bullet lists. "
+        "Answer in the same language as the transcript. Output only the markdown "
+        "body to stdout; do not wrap in code fences."
+    )
+    extra = settings.summary_preprompt.strip()
+    if extra:
+        return extra + "\n\n" + base
+    return base
+
+
+def live_summary_prompt(settings: Settings) -> str:
+    base = (
+        "You are a meeting notes assistant. The meeting is still in progress. "
+        "Read transcript.md in this directory (a partial live transcript). "
+        "Write an interim summary with: a short title line, key points so far, "
+        "action items mentioned, and open questions. Use markdown headings and "
+        "bullet lists. Answer in the same language as the transcript. Output only "
+        "the markdown body to stdout; do not wrap in code fences."
+    )
+    extra = settings.summary_preprompt.strip()
+    if extra:
+        return extra + "\n\n" + base
+    return base
+
+
+def refresh_live_summary(
+    meeting_id: str,
+    folder: Path,
+    settings: Settings,
+    storage_path: str = "",
+) -> None:
+    if not meeting_id or not folder.is_dir():
+        return
+    if not read_default_agent():
+        return
+    payload = stored_transcript_payload(meeting_id, storage_path)
+    transcript_text = segments_to_live_markdown(transcript_segments(payload))
+    if not transcript_text.strip():
+        return
+    (folder / "transcript.md").write_text(transcript_text.strip() + "\n", encoding="utf-8")
+    persist_live_transcript(folder, transcript_text)
+    summary_text = run_agent_prompt(live_summary_prompt(settings), folder)
+    (folder / "summary.md").write_text(summary_text.strip() + "\n", encoding="utf-8")
+    invalidate_meetings_cache()
+
+
+def reset_live_summary_tracking() -> None:
+    RUNTIME.last_summary_chunk = -1
+    RUNTIME.summary_pending_chunk = 0
+
+
+def schedule_live_summary_update(settings: Settings, active: dict[str, Any]) -> None:
+    chunk_count = int(active.get("chunk_count") or 0)
+    if chunk_count <= 0:
+        return
+    meeting_path = RUNTIME.recording_meeting_path.strip() or RUNTIME.selected_meeting_path.strip()
+    meeting_id = str(active.get("id") or "")
+    if not meeting_path or not meeting_id:
+        return
+    if not is_selected_meeting_recording(meeting_path, active):
+        return
+    if chunk_count <= RUNTIME.last_summary_chunk:
+        return
+    RUNTIME.summary_pending_chunk = max(RUNTIME.summary_pending_chunk, chunk_count)
+    if RUNTIME.summary_worker_busy:
+        return
+
+    folder = Path(meeting_path)
+
+    def worker() -> None:
+        RUNTIME.summary_worker_busy = True
+        try:
+            while RUNTIME.summary_pending_chunk > RUNTIME.last_summary_chunk:
+                target_chunk = RUNTIME.summary_pending_chunk
+                RUNTIME.summary_pending_chunk = 0
+                try:
+                    refresh_live_summary(
+                        meeting_id,
+                        folder,
+                        settings,
+                        str(active.get("storage_path") or ""),
+                    )
+                    RUNTIME.last_summary_chunk = target_chunk
+                except RuntimeError:
+                    break
+                publish_state(settings)
+                if RUNTIME.summary_pending_chunk <= RUNTIME.last_summary_chunk:
+                    break
+        finally:
+            RUNTIME.summary_worker_busy = False
+            publish_state(settings)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def meeting_context_markdown(folder: Path) -> str:
+    files = read_meeting_files(folder)
+    title = files["title"] or folder.name
+    parts = [f"# {title}", ""]
+    if files["hasNotes"] and files["notes"].strip():
+        parts.extend(["## Your notes", files["notes"].strip(), ""])
+    if files["summary"].strip():
+        parts.extend(["## Summary", files["summary"].strip(), ""])
+    if files["transcript"].strip():
+        parts.extend(["## Transcript", files["transcript"].strip(), ""])
+    return "\n".join(parts).strip()
+
+
+def format_meeting_datetime(started_at: int) -> str:
+    ts = int(started_at or 0)
+    if ts <= 0:
+        return ""
+    return datetime.fromtimestamp(ts).strftime("%a, %b %d, %Y · %H:%M")
+
+
+def ask_agent_launch_prompt(title: str, started_at: int) -> str:
+    name = str(title or "Meeting").strip() or "Meeting"
+    line = f"/omarchy-meetings {name}"
+    when = format_meeting_datetime(started_at)
+    if when:
+        line += f" · {when}"
+    return line + "\n\n"
+
+
+def launch_agent_with_meeting(folder: Path) -> tuple[bool, str]:
+    if not read_default_agent():
+        return False, "Configure default agent: omarchy default agent <name>"
+    files = read_meeting_files(folder)
+    prompt_body = ask_agent_launch_prompt(files["title"], int(files["startedAt"] or 0))
+    prompt_path = folder / ".agent-launch-prompt.md"
+    prompt_path.write_text(prompt_body, encoding="utf-8")
+    quoted_path = shlex.quote(str(prompt_path))
+    agent_name = read_default_agent()
+    if agent_name == "agent":
+        binary = resolve_agent_binary("agent")
+        if not shutil.which(binary) and binary == "agent":
+            return False, "Cursor Agent CLI not found in PATH"
+        inner = f'{shlex.quote(binary)} "$(cat {quoted_path})"'
+        tui = shutil.which("omarchy-launch-tui")
+        command = f'{shlex.quote(tui)} --app-id=org.omarchy.agent {inner}' if tui else inner
+    else:
+        launcher = shutil.which("omarchy") or "omarchy"
+        command = f'{shlex.quote(launcher)} agent prompt "$(cat {quoted_path})"'
+    subprocess.Popen(
+        ["bash", "-lc", command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return True, ""
+
+
+def cmd_open_agent(payload: dict[str, Any]) -> None:
+    path = str(payload.get("path") or RUNTIME.selected_meeting_path or "").strip()
+    if not path:
+        emit({**build_state(), "ok": False, "error": "Select a meeting first"})
+        return
+    folder = Path(path)
+    if not folder.is_dir():
+        emit({**build_state(), "ok": False, "error": "Meeting folder not found"})
+        return
+    ok, message = launch_agent_with_meeting(folder)
+    if not ok:
+        emit({**build_state(), "ok": False, "error": message})
+        return
+    publish_state()
+
+
+def ask_prompt(question: str) -> str:
+    return (
+        "You are a meeting notes assistant. Read transcript.md, summary.md, and "
+        "notes.md in this directory when present. Answer the user's question using "
+        "only those notes. If the answer is not in the notes, say so briefly. "
+        "Question:\n\n"
+        f"{question.strip()}"
+    )
+
+
+def write_chat_message(meeting_path: Path, role: str, text: str) -> None:
+    chat_path = meeting_path / "chat.md"
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    heading = "You" if role == "user" else "Assistant"
+    block = f"\n\n## {heading} · {stamp}\n\n{text.strip()}\n"
+    if chat_path.is_file():
+        chat_path.write_text(chat_path.read_text(encoding="utf-8") + block, encoding="utf-8")
+    else:
+        chat_path.write_text("# Meeting chat\n" + block, encoding="utf-8")
+
+
+def read_chat_messages(meeting_path: Path) -> list[dict[str, Any]]:
+    chat_path = meeting_path / "chat.md"
+    if not chat_path.is_file():
+        return []
+    text = chat_path.read_text(encoding="utf-8")
+    messages: list[dict[str, Any]] = []
+    for match in re.finditer(r"^## (You|Assistant) · (.+?)\n\n(.*?)(?=\n## |\Z)", text, re.S | re.M):
+        role = "user" if match.group(1) == "You" else "assistant"
+        messages.append({"role": role, "text": match.group(3).strip(), "timestamp": 0})
+    return messages
+
+
+def meeting_folder_for(title: str, started_at: int, settings: Settings) -> Path:
+    date = datetime.fromtimestamp(started_at, tz=timezone.utc).strftime("%Y-%m-%d")
+    folder = notes_dir(settings) / f"{date}-{slugify(title)}"
+    suffix = 2
+    base = folder
+    while folder.exists():
+        folder = Path(f"{base}-{suffix}")
+        suffix += 1
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def finalize_meeting(
+    voxtype_id: str,
+    title: str,
+    settings: Settings,
+    target_folder: Path | None = None,
+) -> Path:
+    row = None
+    if VOXTYPE_MEETINGS_DB.is_file():
+        try:
+            conn = sqlite3.connect(VOXTYPE_MEETINGS_DB)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT id, title, started_at, ended_at, duration_secs, chunk_count FROM meetings WHERE id = ?",
+                (voxtype_id,),
+            ).fetchone()
+            conn.close()
+        except sqlite3.Error:
+            row = None
+
+    started_at = int(row["started_at"]) if row else now_ts()
+    ended_at = int(row["ended_at"]) if row and row["ended_at"] else now_ts()
+    duration = int(row["duration_secs"]) if row and row["duration_secs"] else max(0, ended_at - started_at)
+    resolved_title = title or (str(row["title"]) if row and row["title"] else "Meeting")
+
+    existing_tags: list[str] = []
+    if target_folder and target_folder.is_dir():
+        folder = target_folder
+        meta_path = folder / "meta.json"
+        if meta_path.is_file():
+            try:
+                existing = json.loads(meta_path.read_text(encoding="utf-8"))
+                if existing.get("title"):
+                    resolved_title = str(existing["title"])
+                existing_tags = normalize_tags(existing.get("tags"))
+            except json.JSONDecodeError:
+                pass
+    else:
+        folder = meeting_folder_for(resolved_title, started_at, settings)
+    apply_attendee_labels(voxtype_id)
+    set_busy("Exporting transcript…")
+    transcript_text = voxtype_export(voxtype_id, folder / "transcript.md")
+    if not transcript_text.strip():
+        transcript_path = folder / "transcript.md"
+        if not transcript_path.is_file() or not transcript_path.read_text(encoding="utf-8").strip():
+            transcript_path.write_text(
+                "_No speech was captured in this meeting._\n",
+                encoding="utf-8",
+            )
+
+    try:
+        set_busy("Generating summary…")
+        summary_text = run_agent_prompt(summary_prompt(settings), folder)
+        (folder / "summary.md").write_text(summary_text.strip() + "\n", encoding="utf-8")
+    except RuntimeError as exc:
+        (folder / "summary.error.txt").write_text(str(exc) + "\n", encoding="utf-8")
+
+    meta = {
+        "title": resolved_title,
+        "startedAt": started_at,
+        "endedAt": ended_at,
+        "durationSecs": duration,
+        "voxtypeId": voxtype_id,
+        "status": "completed",
+        "tags": existing_tags,
+        "notesDir": str(folder),
+        "defaultAgent": read_default_agent(),
+        "exportedAt": now_ts(),
+    }
+    (folder / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    invalidate_meetings_cache()
+    invalidate_live_cache()
+    reset_live_summary_tracking()
+    return folder
+
+
+def build_state(settings: Settings | None = None, *, refresh_live: bool = True) -> dict[str, Any]:
+    settings = settings or RUNTIME.settings
+    active = query_active_meeting()
+    selected_path = RUNTIME.selected_meeting_path
+
+    summary = ""
+    transcript = ""
+    notes = ""
+    has_notes = False
+    tags: list[str] = []
+    detail_title = ""
+    started_at = 0
+    ended_at = 0
+    duration_meta = 0
+    meeting_status = ""
+    chat: list[dict[str, Any]] = []
+
+    if selected_path:
+        folder = Path(selected_path)
+        files = read_meeting_files(folder)
+        summary = files["summary"]
+        transcript = files["transcript"]
+        notes = files["notes"]
+        has_notes = files["hasNotes"]
+        tags = files["tags"]
+        detail_title = files["title"]
+        started_at = files["startedAt"]
+        ended_at = files["endedAt"]
+        duration_meta = files["durationSecs"]
+        meeting_status = files["status"]
+        chat = read_chat_messages(folder)
+
+    live = ""
+    duration = 0
+    chunk_count = 0
+    meeting_id = ""
+    title = detail_title
+    recording = False
+    recording_this_meeting = False
+
+    if active or RUNTIME.recording_pending:
+        recording = True
+        if not active:
+            active = {}
+        meeting_id = str(active.get("id") or "")
+        title = str(active.get("title") or detail_title or "Meeting")
+        started_at = int(active.get("started_at") or started_at or now_ts())
+        duration = max(0, now_ts() - started_at)
+        chunk_count = int(active.get("chunk_count") or 0)
+        recording_this_meeting = is_selected_meeting_recording(selected_path, active if active.get("id") else None)
+        storage_path = str(active.get("storage_path") or "")
+        if recording_this_meeting and meeting_id:
+            if refresh_live:
+                live = live_transcript_for(meeting_id, chunk_count, selected_path, storage_path)
+            else:
+                live = cached_live_transcript(meeting_id, selected_path)
+                if live_transcript_is_empty(live):
+                    live = live_transcript_for(meeting_id, chunk_count, selected_path, storage_path)
+        else:
+            live = ""
+        RUNTIME.last_duration_secs = duration
+    elif duration_meta:
+        duration = duration_meta
+
+    meeting_finished = False
+    meeting_draft = False
+    if selected_path and not recording:
+        has_transcript = bool(transcript.strip()) or meeting_status == "completed"
+        meeting_finished = has_transcript or meeting_status == "completed"
+        meeting_draft = not meeting_finished and meeting_status in {"draft", "recording", ""}
+
+    error = ""
+    if not voxtype_installed():
+        error = "Voxtype is not installed"
+    elif not voxtype_meeting_enabled() and not settings.auto_enable_voxtype_meeting:
+        error = "Voxtype meeting mode is disabled"
+    else:
+        ok_dir, dir_error = ensure_notes_dir(settings)
+        if not ok_dir:
+            error = dir_error
+
+    return {
+        "ok": error == "",
+        "error": error,
+        "recording": recording,
+        "recordingThisMeeting": recording_this_meeting,
+        "recordingMeetingPath": RUNTIME.recording_meeting_path,
+        "paused": False,
+        "voxtypeReady": voxtype_installed(),
+        "voxtypeMeetingEnabled": voxtype_meeting_enabled(),
+        "defaultAgent": read_default_agent(),
+        "title": title,
+        "startedAt": started_at,
+        "endedAt": ended_at,
+        "meetingId": meeting_id,
+        "meetingPath": selected_path,
+        "durationSecs": duration,
+        "chunkCount": chunk_count,
+        "pendingChunks": 0,
+        "chunkSeconds": max(15, min(120, settings.chunk_seconds)),
+        "liveTranscript": live,
+        "speakerCount": count_distinct_speakers(live)
+        if recording_this_meeting
+        else count_distinct_speakers(transcript),
+        "summary": summary,
+        "summaryRefreshing": RUNTIME.summary_worker_busy,
+        "transcript": transcript if not recording else "",
+        "notes": notes,
+        "hasNotes": has_notes,
+        "tags": tags,
+        "meetingDraft": meeting_draft,
+        "meetingFinished": meeting_finished,
+        "notesDir": str(notes_dir(settings)),
+        "summaryPreprompt": settings.summary_preprompt,
+        "whisperLanguage": settings.whisper_language,
+        "onboardingComplete": onboarding_complete(),
+        "skillInstalled": skill_is_installed(),
+        "skillInstallError": RUNTIME.skill_install_error,
+        "meetings": scan_saved_meetings(settings),
+        "chat": chat,
+        "busy": RUNTIME.worker_busy,
+        "busyLabel": RUNTIME.worker_label,
+    }
+
+
+def publish_state(settings: Settings | None = None, *, refresh_live: bool = True) -> None:
+    with RUNTIME.lock:
+        emit(build_state(settings, refresh_live=refresh_live))
+
+
+def set_busy(label: str) -> None:
+    RUNTIME.worker_busy = True
+    RUNTIME.worker_label = label
+    publish_state(refresh_live=False)
+
+
+def clear_busy() -> None:
+    RUNTIME.worker_busy = False
+    RUNTIME.worker_label = ""
+    publish_state()
+
+
+def worker_run(label: str, fn) -> None:
+    def wrapped() -> None:
+        set_busy(label)
+        try:
+            fn()
+        finally:
+            clear_busy()
+
+    threading.Thread(target=wrapped, daemon=True).start()
+
+
+def cmd_create_meeting(payload: dict[str, Any]) -> None:
+    title = str(payload.get("title") or "Meeting").strip() or "Meeting"
+    tags = normalize_tags(payload.get("tags"))
+    settings = RUNTIME.settings
+    ok_dir, dir_error = ensure_notes_dir(settings)
+    if not ok_dir:
+        emit({**build_state(settings), "ok": False, "error": dir_error})
+        return
+    started_at = now_ts()
+    folder = meeting_folder_for(title, started_at, settings)
+    meta = {
+        "title": title,
+        "startedAt": started_at,
+        "status": "draft",
+        "tags": tags,
+        "notesDir": str(folder),
+        "defaultAgent": read_default_agent(),
+        "createdAt": started_at,
+    }
+    (folder / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    invalidate_meetings_cache()
+    RUNTIME.selected_meeting_path = str(folder)
+    publish_state(settings)
+
+
+def cmd_start(payload: dict[str, Any]) -> None:
+    title = str(payload.get("title") or "Meeting").strip() or "Meeting"
+    settings = RUNTIME.settings
+
+    selected = RUNTIME.selected_meeting_path.strip()
+    if selected:
+        files = read_meeting_files(Path(selected))
+        if files["title"]:
+            title = files["title"]
+
+    ok, message, _daemon_restarted = ensure_voxtype_meeting_config(settings)
+    if not ok:
+        emit({**build_state(settings), "ok": False, "error": message})
+        return
+
+    if query_active_meeting():
+        emit({**build_state(settings), "ok": False, "error": "A meeting is already recording"})
+        return
+
+    started, start_error = request_voxtype_meeting_start(title)
+    if not started:
+        emit({**build_state(settings), "ok": False, "error": start_error})
+        return
+
+    RUNTIME.recording_pending = True
+    reset_live_summary_tracking()
+    invalidate_live_cache()
+    RUNTIME.recording_meeting_path = selected if selected else ""
+
+    active = wait_for_active_meeting(5.0)
+    if not active:
+        restart_voxtype_daemon()
+        started, start_error = request_voxtype_meeting_start(title)
+        if started:
+            active = wait_for_active_meeting(5.0)
+
+    if not active:
+        RUNTIME.recording_pending = False
+        emit({
+            **build_state(settings),
+            "ok": False,
+            "error": (
+                "Voxtype did not start meeting mode. "
+                "Run: systemctl --user restart voxtype"
+            ),
+        })
+        return
+
+    RUNTIME.recording_pending = False
+    if selected:
+        link_active_meeting_to_folder(Path(selected), active)
+        invalidate_meetings_cache()
+
+    notify = shutil.which("omarchy-notification-send")
+    if notify:
+        subprocess.Popen(
+            [notify, "-u", "normal", "-t", "5000", "Meeting transcribing", f"Transcribing: {title}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    publish_state(settings)
+
+
+def cmd_stop(_payload: dict[str, Any]) -> None:
+    settings = RUNTIME.settings
+    active = query_active_meeting()
+    was_pending = RUNTIME.recording_pending
+    RUNTIME.recording_pending = False
+    target = RUNTIME.selected_meeting_path.strip()
+    target_folder = Path(target) if target else None
+
+    if not active and not was_pending:
+        emit({**build_state(settings), "ok": False, "error": "No meeting is recording"})
+        return
+
+    if not active:
+        if VOXTYPE_BIN:
+            run([VOXTYPE_BIN, "meeting", "stop"], timeout=60)
+        active = query_active_meeting()
+        if not active:
+            meeting_id = resolve_voxtype_meeting_id(None, target_folder)
+            if meeting_id:
+                title = str(read_meeting_files(target_folder)["title"] if target_folder else "Meeting")
+                worker_run("Saving meeting…", lambda: _finalize_stop(meeting_id, title, settings, target_folder))
+                return
+            emit({
+                **build_state(settings),
+                "ok": False,
+                "error": "Transcription never started. Try Start transcribing again.",
+            })
+            return
+
+    meeting_id = str(active.get("id") or "")
+    title = str(active.get("title") or "Meeting")
+
+    worker_run("Saving meeting…", lambda: _finalize_stop(meeting_id, title, settings, target_folder))
+
+
+def _finalize_stop(
+    meeting_id: str,
+    title: str,
+    settings: Settings,
+    target_folder: Path | None,
+) -> None:
+    if VOXTYPE_BIN:
+        set_busy("Stopping capture…")
+        run([VOXTYPE_BIN, "meeting", "stop"], timeout=60)
+        wait_for_stopped_meeting(meeting_id, timeout=45.0)
+    set_busy("Exporting transcript…")
+    folder = finalize_meeting(meeting_id, title, settings, target_folder)
+    RUNTIME.selected_meeting_path = str(folder)
+    RUNTIME.recording_meeting_path = ""
+    invalidate_live_cache()
+    notify = shutil.which("omarchy-notification-send")
+    if notify:
+        subprocess.Popen(
+            [notify, "-u", "normal", "-t", "8000", "Meeting saved", folder.name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    publish_state(settings)
+
+
+def cmd_toggle(_payload: dict[str, Any]) -> None:
+    if query_active_meeting() or RUNTIME.recording_pending:
+        cmd_stop({})
+    else:
+        cmd_start({"title": "Meeting"})
+
+
+def cmd_select(payload: dict[str, Any]) -> None:
+    path = str(payload.get("path") or payload.get("id") or "").strip()
+    if path and not path.startswith("/"):
+        path = str(notes_dir() / path)
+    if path != RUNTIME.selected_meeting_path:
+        invalidate_live_cache()
+    RUNTIME.selected_meeting_path = path
+    publish_state()
+
+
+def write_meeting_tags(folder: Path, tags: Any) -> None:
+    meta_path = folder / "meta.json"
+    meta: dict[str, Any] = {}
+    if meta_path.is_file():
+        try:
+            loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                meta = loaded
+        except json.JSONDecodeError:
+            meta = {}
+    meta["tags"] = normalize_tags(tags)
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    invalidate_meetings_cache()
+
+
+def cmd_save_tags(payload: dict[str, Any]) -> None:
+    path = str(payload.get("path") or RUNTIME.selected_meeting_path or "").strip()
+    if not path:
+        emit({**build_state(), "ok": False, "error": "Select a meeting first"})
+        return
+    folder = Path(path)
+    if not (folder / "meta.json").is_file():
+        emit({**build_state(), "ok": False, "error": "Meeting not found"})
+        return
+    write_meeting_tags(folder, payload.get("tags"))
+    publish_state()
+
+
+def cmd_save_notes(payload: dict[str, Any]) -> None:
+    path = str(payload.get("path") or RUNTIME.selected_meeting_path or "").strip()
+    content = str(payload.get("content") or "")
+    if not path:
+        emit({**build_state(), "ok": False, "error": "Select a meeting first"})
+        return
+    folder = Path(path)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "notes.md").write_text(content, encoding="utf-8")
+    invalidate_meetings_cache()
+    publish_state()
+
+
+def cmd_create_notes(payload: dict[str, Any]) -> None:
+    path = str(payload.get("path") or RUNTIME.selected_meeting_path or "").strip()
+    if not path:
+        emit({**build_state(), "ok": False, "error": "Select a meeting first"})
+        return
+    folder = Path(path)
+    folder.mkdir(parents=True, exist_ok=True)
+    notes_path = folder / "notes.md"
+    if not notes_path.is_file():
+        notes_path.write_text("", encoding="utf-8")
+    publish_state()
+
+
+def cmd_ask(payload: dict[str, Any]) -> None:
+    question = str(payload.get("question") or "").strip()
+    path = str(payload.get("path") or RUNTIME.selected_meeting_path or "").strip()
+    if not question:
+        emit({**build_state(), "ok": False, "error": "Question is required"})
+        return
+    if not path:
+        emit({**build_state(), "ok": False, "error": "Select a meeting first"})
+        return
+
+    folder = Path(path)
+
+    def ask() -> None:
+        write_chat_message(folder, "user", question)
+        try:
+            answer = run_agent_prompt(ask_prompt(question), folder)
+            write_chat_message(folder, "assistant", answer)
+        except RuntimeError as exc:
+            write_chat_message(folder, "assistant", f"Error: {exc}")
+        RUNTIME.selected_meeting_path = str(folder)
+        publish_state()
+
+    worker_run("Thinking…", ask)
+
+
+def parse_bool(value: Any, fallback: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    return fallback
+
+
+def cmd_reload_settings(payload: dict[str, Any]) -> None:
+    current = RUNTIME.settings
+    settings = Settings(
+        notes_dir=str(payload.get("notesDir") or ""),
+        chunk_seconds=int(payload.get("chunkSeconds") or 30),
+        whisper_language=str(payload.get("whisperLanguage") or "auto"),
+        keep_audio=parse_bool(payload.get("keepAudio"), current.keep_audio),
+        auto_enable_voxtype_meeting=parse_bool(payload.get("autoEnableVoxtypeMeeting"), current.auto_enable_voxtype_meeting),
+        summary_preprompt=str(payload.get("summaryPreprompt") or ""),
+    )
+    RUNTIME.settings = settings
+    ok_dir, dir_error = ensure_notes_dir(settings)
+    if not ok_dir:
+        emit({**build_state(settings), "ok": False, "error": dir_error})
+        return
+    invalidate_meetings_cache()
+    publish_state(settings)
+
+
+def poll_loop() -> None:
+    last_chunk_count = -1
+    last_json_mtime = 0.0
+    while not RUNTIME.stop_poll.is_set():
+        settings = RUNTIME.settings
+        active = query_active_meeting()
+        if active:
+            if RUNTIME.recording_pending:
+                RUNTIME.recording_pending = False
+            chunk_count = int(active.get("chunk_count") or 0)
+            duration = max(0, now_ts() - int(active.get("started_at") or now_ts()))
+            json_mtime = transcript_json_mtime(str(active.get("storage_path") or ""))
+            refresh_live = chunk_count != last_chunk_count or json_mtime != last_json_mtime
+            if refresh_live or duration != RUNTIME.last_duration_secs:
+                last_chunk_count = chunk_count
+                last_json_mtime = json_mtime
+                if refresh_live and (chunk_count > 0 or json_mtime > 0):
+                    schedule_live_summary_update(settings, active)
+                publish_state(settings, refresh_live=refresh_live)
+        elif RUNTIME.recording_pending:
+            publish_state(settings, refresh_live=False)
+        RUNTIME.stop_poll.wait(POLL_INTERVAL_SEC)
+
+
+def handle_command(payload: dict[str, Any]) -> None:
+    cmd = str(payload.get("cmd") or "").strip()
+    if cmd == "reload-settings":
+        cmd_reload_settings(payload)
+    elif cmd == "start":
+        cmd_start(payload)
+    elif cmd == "create-meeting":
+        cmd_create_meeting(payload)
+    elif cmd == "stop":
+        cmd_stop(payload)
+    elif cmd == "toggle-recording":
+        cmd_toggle(payload)
+    elif cmd == "select-meeting":
+        cmd_select(payload)
+    elif cmd == "save-notes":
+        cmd_save_notes(payload)
+    elif cmd == "save-tags":
+        cmd_save_tags(payload)
+    elif cmd == "create-notes":
+        cmd_create_notes(payload)
+    elif cmd == "ask":
+        cmd_ask(payload)
+    elif cmd == "open-agent":
+        cmd_open_agent(payload)
+    elif cmd == "delete-meeting":
+        cmd_delete_meeting(payload)
+    elif cmd == "refresh":
+        publish_state()
+    elif cmd == "open-notes-dir":
+        ok_dir, dir_error = ensure_notes_dir()
+        if not ok_dir:
+            emit({**build_state(), "ok": False, "error": dir_error})
+            return
+        folder = notes_dir()
+        opener = shutil.which("xdg-open") or "xdg-open"
+        subprocess.Popen([opener, str(folder)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        publish_state()
+    elif cmd == "complete-onboarding":
+        mark_onboarding_complete()
+        publish_state()
+    elif cmd == "install-skill":
+        cmd_install_skill(payload)
+    else:
+        emit({**build_state(), "ok": False, "error": f"Unknown command: {cmd or '(empty)'}"})
+
+
+def daemon_main() -> int:
+    RUNTIME.poll_thread = threading.Thread(target=poll_loop, daemon=True)
+    RUNTIME.poll_thread.start()
+    publish_state()
+
+    try:
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+            if not ready:
+                continue
+            line = sys.stdin.readline()
+            if line == "":
+                break
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                emit({**build_state(), "ok": False, "error": "invalid JSON command"})
+                continue
+            if not isinstance(payload, dict):
+                emit({**build_state(), "ok": False, "error": "command must be a JSON object"})
+                continue
+            try:
+                handle_command(payload)
+            except Exception as exc:
+                emit({**build_state(), "ok": False, "error": str(exc)})
+    except KeyboardInterrupt:
+        pass
+    finally:
+        RUNTIME.stop_poll.set()
+    return 0
+
+
+def once_main() -> int:
+    publish_state()
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Omarchy meetings notepad helper")
+    parser.add_argument("--daemon", action="store_true", help="Run as long-lived daemon")
+    args = parser.parse_args()
+    if args.daemon:
+        return daemon_main()
+    return once_main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
