@@ -5,7 +5,7 @@
 > *"Granola-style notes — local, no meeting bot."*
 
 **AI Meeting Notepad** for the **Omarchy** bar — capture desktop and microphone audio with [Voxtype](https://voxtype.io/),  
-Markdown on disk, AI summary, and your own notes. Inspired by [Granola](https://www.granola.ai/).
+Markdown on disk, optional AI summary via your default Omarchy agent, and your own notes. Inspired by [Granola](https://www.granola.ai/).
 
 <br>
 
@@ -35,7 +35,21 @@ omarchy plugin enable jlopezxs.meetings --section right
 
 ### Uninstall
 
+`omarchy plugin remove` only deletes the plugin folder. It does **not** restore Voxtype or delete notes.
+
+Run this first:
+
 ```bash
+~/.config/omarchy/plugins/jlopezxs.meetings/uninstall.sh
+omarchy plugin remove jlopezxs.meetings
+```
+
+That restores `~/.config/voxtype/config.toml` from the backup taken before this plugin changed it, asks Voxtype to reread config, removes copied agent skills, and deletes local meeting markdown plus onboarding state.
+
+To keep notes:
+
+```bash
+~/.config/omarchy/plugins/jlopezxs.meetings/uninstall.sh --keep-notes
 omarchy plugin remove jlopezxs.meetings
 ```
 
@@ -48,12 +62,12 @@ omarchy plugin remove jlopezxs.meetings
 |:---:|:---|:---|
 | 🎙️ | **Capture** | Desktop + microphone via [Voxtype](https://voxtype.io/) meeting mode — nothing joins the call |
 | 📝 | **Transcript** | Whisper transcript saved when you stop the meeting |
-| ✨ | **AI summary** | Summarize with your default Omarchy agent when you stop |
+| ✨ | **AI summary** | Optional. Off by default. When enabled, live and final summaries use your default Omarchy agent (that agent may send the transcript to a remote provider) |
 | 📋 | **Your notes** | Manual notes auto-saved next to the transcript |
 | 🔍 | **Search** | Find by title, notes, summary, or transcript |
 | 📌 | **Float** | Pin the notepad as a picture-in-picture window on every workspace |
-| 🤖 | **Agent skill** | `/omarchy-meeting-notepad` so any agent can read your notes ([skills.sh](https://www.skills.sh/)) |
-| 💾 | **Markdown on disk** | One folder per meeting — no cloud, no API |
+| 🤖 | **Agent skill** | `/omarchy-meeting-notepad` copied from the bundled skill so agents can read your notes |
+| 💾 | **Markdown on disk** | One folder per meeting — capture and transcripts stay local |
 
 ---
 
@@ -61,8 +75,8 @@ omarchy plugin remove jlopezxs.meetings
 
 On first open, a **3-step onboarding** walks you through:
 
-1. **What it does** — capture, transcribe, summarize, no meeting bot
-2. **How it works** — Voxtype + PipeWire + Whisper + local Markdown
+1. **What it does** — capture, transcribe, optional summarize, no meeting bot
+2. **How it works** — Voxtype + PipeWire + Whisper + local Markdown; summaries only if you enable them
 3. **Get set up** — **Install Voxtype** (opens the Omarchy installer) or **Get started** if already installed
 
 Progress is saved to `~/.local/state/omarchy/meetings-onboarding.json`.
@@ -77,7 +91,7 @@ Progress is saved to `~/.local/state/omarchy/meetings-onboarding.json`.
 
 While a meeting is active (draft or transcribing):
 
-- **Start transcribing** on a meeting begins Voxtype transcription; **Stop** ends the meeting and saves transcript + AI summary
+- **Start transcribing** on a meeting begins Voxtype transcription; **Stop** ends the meeting and saves the transcript (and an AI summary if you enabled that in Settings)
 - **Your notes** auto-save below the controls
 - Status shows **Transcribing · MM:SS**; the bar widget shows a duration badge
 - Click the pin icon to **float** the notepad; **Dock** returns it to the bar panel
@@ -91,15 +105,16 @@ After you stop, the view switches to tabs: **Your notes** (once you have notes),
 | Notes folder | Where meetings are saved (default `~/.local/state/omarchy/meetings/`) |
 | Meetings per page | How many meetings fit on each list page (default 5) |
 | Default language | Whisper language (`auto`, `es`, `en`, …) |
-| Summary preprompt | Extra instructions prepended to the AI summary |
-| Agent skill | Install `/omarchy-meeting-notepad` **globally** so any agent can read your notes |
+| AI summaries | Off by default. When on, send the transcript to your default Omarchy agent for live and final summaries |
+| Summary preprompt | Extra instructions prepended to the AI summary (only used when AI summaries are on) |
+| Agent skill | Copy the bundled `/omarchy-meeting-notepad` skill into your agent skill folders |
 
 ## Files
 
 ```
 <notes-root>/
   index.jsonl            # catalog for agents — one meeting per line
-  YYYY-MM-DD-slug/
+  YYYYMMDD_HHmmss_slug/
     meta.json            # title, ISO + unix times, speakers, stats
     transcript.jsonl     # one spoken turn per line (grep / cite this)
     transcript.md        # same content, human-readable
@@ -112,15 +127,9 @@ After you stop, the view switches to tabs: **Your notes** (once you have notes),
 
 ## Agent skill (`/omarchy-meeting-notepad`)
 
-The plugin ships a [skills.sh](https://www.skills.sh/) skill at `skills/omarchy-meeting-notepad/`. It tells any agent how the widget works, where notes live, and how to read them.
+The plugin ships a skill at `skills/omarchy-meeting-notepad/`. It tells any agent how the widget works, where notes live, and how to read them.
 
-**From Settings:** open the notepad → gear → **Install globally** (or **Already installed** to reinstall). That opens a terminal and runs the skills CLI with `-g --agent '*'` so every detected agent (Cursor, Claude Code, Codex, …) can use it.
-
-**From GitHub:**
-
-```bash
-npx skills add jlopezxs/omarchy-ai-meeting-notes -g --skill omarchy-meeting-notepad --agent '*'
-```
+**From Settings:** open the notepad → gear → **Install for agents** (or **Already installed** to copy again). That copies the bundled skill into `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, and `~/.cursor/skills`. It does not download npm packages or fetch GitHub.
 
 The skill lives at [`skills/omarchy-meeting-notepad`](https://github.com/jlopezxs/omarchy-ai-meeting-notes/tree/main/skills/omarchy-meeting-notepad) in the plugin repo.
 
@@ -130,9 +139,8 @@ The skill lives at [`skills/omarchy-meeting-notepad`](https://github.com/jlopezx
 
 - Omarchy 4 (Quickshell shell)
 - Voxtype with meeting mode
-- Default Omarchy agent for summaries (`omarchy default agent claude`)
+- Optional: a default Omarchy agent if you enable AI summaries (`omarchy default agent claude`)
 - `wl-copy` for copy actions
-- Node.js / `npx` to install the global agent skill from Settings
 
 ## Validate
 

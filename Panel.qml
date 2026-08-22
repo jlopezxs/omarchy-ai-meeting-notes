@@ -72,7 +72,9 @@ Panel {
     : state.durationSecs
   readonly property string detailHeaderTitle: Model.detailHeaderTitle(state, detailMeeting, titleDraft)
   readonly property string detailHeaderSubtitle: Model.detailHeaderSubtitle(state, detailMeeting)
-  readonly property string lastError: Model.formatUserError(state.error || (service ? service.lastError : ""))
+  readonly property string lastError: Model.formatUserError(
+    state.summaryError || state.error || (service ? service.lastError : "")
+  )
   readonly property var detailTabs: Model.detailTabs(state)
   readonly property string detailPhase: Model.detailPhase(state)
   readonly property bool detailActive: detailPhase === "active"
@@ -82,6 +84,7 @@ Panel {
     ? detailTabs[safeDetailTabIndex].id
     : "summary"
   readonly property string activeDetailText: Model.detailTabContent(state, activeDetailTabId)
+  readonly property var summaryUiState: Model.withAiSummaries(state, setting("aiSummaries", false))
   readonly property int chunkSecondsSetting: Model.normalizeChunkSeconds(setting("chunkSeconds", 30))
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -159,12 +162,8 @@ Panel {
     ])
   }
 
-  function installSkillInTerminal() {
-    Quickshell.execDetached([
-      "omarchy-launch-floating-terminal-with-presentation",
-      Model.skillGithubInstallCommand()
-    ])
-    if (service) Qt.callLater(function() { service.refresh() })
+  function installSkill() {
+    if (service) service.installSkill()
   }
 
   function requestSettingsAction(action) {
@@ -346,7 +345,7 @@ Panel {
   function askAgentWithMeeting() {
     if (!service || actionBusy) return
     if (root.state.skillInstalled !== true) {
-      root.installSkillInTerminal()
+      root.installSkill()
       return
     }
     service.openAgentWithMeeting(root.detailMeetingPath || root.state.meetingPath || "")
@@ -355,10 +354,17 @@ Panel {
   function askAgentFromList() {
     if (!service || actionBusy) return
     if (root.state.skillInstalled !== true) {
-      root.installSkillInTerminal()
+      root.installSkill()
       return
     }
     service.openAgentWithSkill()
+  }
+
+  function generateSummary() {
+    if (!service) return
+    var path = String(root.detailMeetingPath || root.state.meetingPath || "").trim()
+    if (!path) return
+    service.generateSummary(path)
   }
 
   function deleteMeeting(path) {
@@ -1673,12 +1679,82 @@ Panel {
           MarkdownView {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: activeDetailTabId !== "notes" && !Model.summaryLoadingVisible(root.state, activeDetailTabId)
+            visible: activeDetailTabId !== "notes"
+              && !Model.summaryLoadingVisible(root.state, activeDetailTabId)
+              && !Model.summaryEmptyVisible(root.summaryUiState, activeDetailTabId)
             markdown: activeDetailText
             foreground: root.foreground
             accent: Color.accent
             dim: root.dim
             fontFamily: root.fontFamily
+          }
+
+          Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: Model.summaryEmptyVisible(root.summaryUiState, activeDetailTabId)
+
+            ColumnLayout {
+              anchors.centerIn: parent
+              width: Math.min(parent.width, Style.space(280))
+              spacing: Style.space(10)
+
+              Item {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: Style.space(44)
+                Layout.preferredHeight: Style.space(44)
+
+                OpticalGlyph {
+                  anchors.centerIn: parent
+                  width: Style.space(36)
+                  height: Style.space(36)
+                  text: Model.summaryEmptyIcon(root.summaryUiState)
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.iconLarge
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.42)
+                }
+              }
+
+              Text {
+                Layout.fillWidth: true
+                text: Model.summaryEmptyTitle(root.summaryUiState)
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+              }
+
+              Text {
+                Layout.fillWidth: true
+                text: Model.summaryEmptyCaption(root.summaryUiState)
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+              }
+
+              PanelTextButton {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: Style.space(4)
+                label: Model.summaryEmptyActionLabel(root.summaryUiState)
+                tooltip: Model.summaryEmptyActionTooltip(root.summaryUiState)
+                labelBold: true
+                labelColor: root.foreground
+                accentColor: Color.accent
+                fontFamily: root.fontFamily
+                actionable: Model.summaryEmptyGenerate(root.summaryUiState)
+                  ? Model.canGenerateSummary(root.summaryUiState)
+                  : true
+                onActivated: {
+                  if (Model.summaryEmptyGenerate(root.summaryUiState))
+                    root.generateSummary()
+                  else
+                    root.showSettings()
+                }
+              }
+            }
           }
 
           LoadingHint {
@@ -1709,7 +1785,10 @@ Panel {
 
       Text {
         Layout.fillWidth: true
-        visible: lastError !== ""
+        visible: lastError !== "" && !(
+          String((root.state && root.state.summaryError) || "").trim() !== ""
+          && Model.summaryEmptyVisible(root.summaryUiState, activeDetailTabId)
+        )
         wrapMode: Text.WordWrap
         color: root.urgent
         font.family: root.fontFamily
@@ -1950,6 +2029,77 @@ Panel {
       PanelSectionHeader {
         Layout.fillWidth: true
         Layout.topMargin: Style.space(8)
+        text: "AI SUMMARIES"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+      }
+
+      Text {
+        Layout.fillWidth: true
+        wrapMode: Text.WordWrap
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        text: "Off by default. When on, live and final summaries send the transcript to your default Omarchy agent, which may use a remote provider. Capture and transcripts stay local."
+      }
+
+      Row {
+        spacing: Style.space(4)
+
+        Repeater {
+          model: [
+            { id: "off", label: "Off" },
+            { id: "on", label: "On" }
+          ]
+
+          delegate: CursorSurface {
+            required property var modelData
+            property bool pointerHot: false
+            property bool selected: Model.normalizeBool(setting("aiSummaries", false), false) === (modelData.id === "on")
+            width: aiLabel.implicitWidth + Style.space(18)
+            height: aiLabel.implicitHeight + Style.space(12)
+            foreground: root.foreground
+            accent: Color.accent
+            bordered: true
+            hasCursor: pointerHot
+            current: selected
+
+            HoverHandler {
+              onHoveredChanged: pointerHot = hovered
+            }
+
+            PanelToolTip {
+              visible: pointerHot
+              text: modelData.id === "on"
+                ? "Send transcripts to your default Omarchy agent for summaries"
+                : "Keep transcripts local; do not call an agent"
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              id: aiLabel
+              anchors.centerIn: parent
+              text: modelData.label
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                if (service) service.persistSetting("aiSummaries", modelData.id === "on")
+              }
+            }
+          }
+        }
+      }
+
+      PanelSectionHeader {
+        Layout.fillWidth: true
+        Layout.topMargin: Style.space(8)
         text: "SUMMARY PREPROMPT"
         foreground: root.foreground
         fontFamily: root.fontFamily
@@ -2023,7 +2173,7 @@ Panel {
         accentColor: Color.accent
         fontFamily: root.fontFamily
         actionable: true
-        onActivated: root.installSkillInTerminal()
+        onActivated: root.installSkill()
       }
 
       Text {
@@ -2050,7 +2200,7 @@ Panel {
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
-        text: "Reset restores defaults and onboarding. Meetings stay on disk."
+        text: "Reset restores defaults and onboarding. Meetings stay on disk. Removing the plugin does not reverse Voxtype or delete notes — run uninstall.sh first (see README)."
       }
 
       PanelTextButton {

@@ -20,6 +20,11 @@ assert "index.jsonl" in text
 assert "transcript.jsonl" in text
 assert "meta.json" in text
 assert "transcript.md" in text
+assert "no API, no cloud" not in text
+helper = Path("scripts/meetings").read_text(encoding="utf-8")
+for token in ("bypassPermissions", "dangerously-bypass", "--yolo", "--allow-all", "--auto-approve", "--trust", "--approve-mcps", "--sandbox disabled", "npx ", "systemctl"):
+    assert token not in helper, f"helper still contains {token}"
+assert Path("uninstall.sh").is_file(), "missing uninstall.sh"
 print("skill: ok")
 PY
 

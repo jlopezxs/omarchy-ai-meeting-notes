@@ -25,7 +25,9 @@ Item {
   readonly property int displayDurationSecs: recordingThisMeeting && state.startedAt > 0
     ? Math.max(state.durationSecs, nowSeconds - state.startedAt)
     : state.durationSecs
-  readonly property string lastError: Model.formatUserError(state.error || (service ? service.lastError : ""))
+  readonly property string lastError: Model.formatUserError(
+    state.summaryError || state.error || (service ? service.lastError : "")
+  )
   readonly property string headerTitle: Model.detailHeaderTitle(state, null, "Meeting")
   readonly property int chunkSecondsSetting: Model.normalizeChunkSeconds(setting("chunkSeconds", 30))
 

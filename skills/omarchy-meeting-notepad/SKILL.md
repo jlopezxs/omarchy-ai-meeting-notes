@@ -11,7 +11,7 @@ description: >
 
 # AI Meeting Notepad
 
-Read the user's local meeting notes captured by the **AI Meeting Notepad** Omarchy bar widget (`jlopezxs.meetings`). Notes are files on disk — no API, no cloud.
+Read the user's local meeting notes captured by the **AI Meeting Notepad** Omarchy bar widget (`jlopezxs.meetings`). Capture and transcripts are files on disk. Optional AI summaries, if the user enabled them, go through the user's default Omarchy agent (which may be a remote provider).
 
 Use this skill whenever the user asks what was said in a meeting, wants action items, or wants to search past calls.
 
@@ -26,7 +26,7 @@ The widget lives in the Omarchy shell bar (plugin id `jlopezxs.meetings`).
 
 - Click the notepad icon to open the notepad. Transcription starts only from **Start transcribing** on a meeting.
 - **New meeting** creates a draft folder, then **Start transcribing** captures desktop + microphone audio with [Voxtype](https://voxtype.io/) meeting mode (no meeting bot).
-- While active: a **Your notes** editor that auto-saves. After **Stop**, the transcript and AI summary are saved.
+- While active: a **Your notes** editor that auto-saves. After **Stop**, the transcript is saved. An AI summary is written only if the user enabled AI summaries in Settings.
 - After **Stop**: tabs for **Your notes**, **Summary**, and **Transcript**. Search covers title, notes, summary, and transcript.
 
 IPC (optional, for controlling capture — not for reading notes):
@@ -62,7 +62,7 @@ Widget setup state lives at `~/.local/state/omarchy/meetings-onboarding.json`, *
 ```
 <notes-root>/
   index.jsonl              # catalog — one JSON object per meeting
-  YYYY-MM-DD-<slug>/
+  YYYYMMDD_HHmmss_slug/
     meta.json              # identity, ISO dates, speakers, stats
     transcript.jsonl       # one spoken turn per line — grep this
     transcript.md          # same content, human-readable
@@ -74,7 +74,7 @@ Widget setup state lives at `~/.local/state/omarchy/meetings-onboarding.json`, *
     summary.error.txt      # present when summary generation failed
 ```
 
-Folder name: UTC date + slug of the title, e.g. `2026-08-21-standup`. Duplicates get `-2`, `-3`, …
+Folder name: local date + time + slug of the title, e.g. `20260821_173101_standup`. Same-second duplicates get `_2`, `_3`, …
 
 A directory is a meeting **only** if it contains `meta.json`. `index.jsonl` is a file in the root, not a meeting.
 

@@ -36,6 +36,7 @@ Item {
       whisperLanguage: String(setting("whisperLanguage", "auto") || "auto"),
       keepAudio: Model.normalizeBool(setting("keepAudio", false), false),
       autoEnableVoxtypeMeeting: Model.normalizeBool(setting("autoEnableVoxtypeMeeting", true), true),
+      aiSummaries: Model.normalizeBool(setting("aiSummaries", false), false),
       summaryPreprompt: String(setting("summaryPreprompt", "") || "")
     }
     if (!overrides) return base
@@ -122,6 +123,14 @@ Item {
     sendCommand({ cmd: "open-agent", skillOnly: true })
   }
 
+  function generateSummary(path) {
+    sendCommand({
+      cmd: "generate-summary",
+      path: path || state.meetingPath || "",
+      aiSummaries: Model.normalizeBool(setting("aiSummaries", false), false)
+    })
+  }
+
   function deleteMeeting(path) {
     sendCommand({ cmd: "delete-meeting", path: String(path || "").trim() })
   }
@@ -151,7 +160,10 @@ Item {
     if (raw === "") return
     var parsed = Model.parseState(raw)
     state = parsed
-    if (!parsed.ok && parsed.error !== "")
+    var summaryError = String(parsed.summaryError || "").trim()
+    if (summaryError !== "")
+      lastError = summaryError
+    else if (!parsed.ok && parsed.error !== "")
       lastError = parsed.error
     else if (parsed.ok)
       lastError = ""

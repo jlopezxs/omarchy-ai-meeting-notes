@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "jlopezxs.meetings",
   "name": "AI Meeting Notepad",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "jlopezxs",
   "license": "MIT",
-  "description": "Granola-style meeting notes: capture desktop and mic audio, transcribe with Voxtype, summarize and ask questions with your default Omarchy agent.",
+  "description": "Granola-style meeting notes: capture desktop and mic audio, transcribe locally with Voxtype, optional AI summaries via your default Omarchy agent.",
   "kinds": [
     "bar-widget",
     "service"
@@ -27,6 +27,7 @@
       "whisperLanguage": "auto",
       "keepAudio": false,
       "autoEnableVoxtypeMeeting": true,
+      "aiSummaries": false,
       "summaryPreprompt": "",
       "listMeetingsMax": 5
     },
@@ -57,11 +58,18 @@
         "description": "Whisper language for meetings. Use es/en for Spanish/English video or calls — avoids English hallucinations on non-English audio."
       },
       {
+        "key": "aiSummaries",
+        "type": "boolean",
+        "label": "AI summaries",
+        "defaultValue": false,
+        "description": "Send transcripts to your default Omarchy agent for live and final summaries. That agent may use a remote provider. Off by default. Capture and transcripts stay local either way."
+      },
+      {
         "key": "summaryPreprompt",
         "type": "string",
         "label": "Summary preprompt",
         "defaultValue": "",
-        "description": "Extra instructions prepended to the AI summary prompt."
+        "description": "Extra instructions prepended to the AI summary prompt. Only used when AI summaries are on."
       },
       {
         "key": "chunkSeconds",

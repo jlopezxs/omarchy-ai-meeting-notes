@@ -229,6 +229,8 @@ function parseState(raw) {
       onboardingComplete: data.onboardingComplete === true,
       skillInstalled: data.skillInstalled === true,
       skillInstallError: data.skillInstallError ? String(data.skillInstallError) : "",
+      summaryError: data.summaryError ? String(data.summaryError) : "",
+      aiSummaries: normalizeBool(data.aiSummaries, false),
       meetings: meetings,
       chat: chat,
       busy: data.busy === true,
@@ -275,6 +277,8 @@ function emptyState(error) {
     onboardingComplete: false,
     skillInstalled: false,
     skillInstallError: "",
+    summaryError: "",
+    aiSummaries: false,
     meetings: [],
     chat: [],
     busy: false,
@@ -604,10 +608,10 @@ function onboardingStepTitle(step) {
 function onboardingStepBody(step, voxtypeReady) {
   var index = Number(step) || 0
   if (index === 0) {
-    return "Capture meeting audio from your microphone and computer. Get a transcript, an AI summary, and searchable notes — without inviting a bot to your call."
+    return "Capture meeting audio from your microphone and computer. Get a local transcript and searchable notes — without inviting a bot to your call. AI summaries are off until you enable them in Settings."
   }
   if (index === 1) {
-    return "Voxtype records system audio and your mic through PipeWire, transcribes speech in chunks with Whisper, and saves everything as Markdown on your machine. Summaries use your default Omarchy agent."
+    return "Voxtype records system audio and your mic through PipeWire, transcribes speech in chunks with Whisper, and saves Markdown on your machine. Optional summaries use your default Omarchy agent, which may send the transcript to that agent's provider."
   }
   if (voxtypeReady) {
     return "Voxtype is installed and ready. You can start capturing meetings from the list view."
@@ -624,7 +628,7 @@ function settingsBackIcon() {
 }
 
 function settingsHeroSubtitle() {
-  return "FOLDER · LANGUAGE · SKILL · DATA"
+  return "FOLDER · LANGUAGE · AI · SKILL · DATA"
 }
 
 function detailTabTooltip(tabId) {
@@ -647,25 +651,14 @@ function listMeetingsMaxTooltip(max) {
   return "Show " + String(max) + " meetings per page"
 }
 
-var SKILL_NAME = "omarchy-meeting-notepad"
-var SKILL_GITHUB_SOURCE = "jlopezxs/omarchy-ai-meeting-notes"
-
-function skillGithubSource() {
-  return SKILL_GITHUB_SOURCE
-}
-
-function skillGithubInstallCommand() {
-  return "npx --yes skills add " + SKILL_GITHUB_SOURCE + " -g --skill " + SKILL_NAME + " --agent '*' -y"
-}
-
 function skillInstallLabel(installed) {
-  return installed ? "Already installed" : "Install globally"
+  return installed ? "Already installed" : "Install for agents"
 }
 
 function skillInstallTooltip(installed) {
   if (installed)
-    return "Opens a terminal to reinstall /omarchy-meeting-notepad globally"
-  return "Opens a terminal to install /omarchy-meeting-notepad globally so any agent can read your meetings"
+    return "Copy the bundled /omarchy-meeting-notepad skill into your agent skill folders again"
+  return "Copy the bundled /omarchy-meeting-notepad skill into your agent skill folders so agents can read your meetings"
 }
 
 function skillInstallStatusText(installed) {
@@ -673,7 +666,7 @@ function skillInstallStatusText(installed) {
 }
 
 function skillInstallHelpText() {
-  return "Installs /omarchy-meeting-notepad globally via the skills.sh CLI so Cursor, Claude Code, Codex, and other agents can find and read your meeting notes from any project."
+  return "Copies the skill shipped with this plugin into ~/.agents/skills (and Claude/Codex/Cursor skill folders). No npm or GitHub download."
 }
 
 function defaultWidgetSettings() {
@@ -683,6 +676,7 @@ function defaultWidgetSettings() {
     whisperLanguage: "auto",
     keepAudio: false,
     autoEnableVoxtypeMeeting: true,
+    aiSummaries: false,
     summaryPreprompt: "",
     listMeetingsMax: 5,
     panelScreen: "list",
@@ -699,6 +693,7 @@ function liveSummaryPreview(state) {
 function liveSummaryStatusText(state, chunkSeconds) {
   if (!state || state.recordingThisMeeting !== true) return ""
   var secs = normalizeChunkSeconds(chunkSeconds || state.chunkSeconds)
+  if (state.aiSummaries !== true) return "AI summaries off — enable in Settings (sends transcript to your agent)"
   if (state.summaryRefreshing) return "Updating summary…"
   if (liveSummaryPreview(state)) return "Updates every ~" + secs + "s with each audio chunk"
   if (!state.defaultAgent) return "Set a default Omarchy agent to enable live summaries"
@@ -796,6 +791,84 @@ function summaryLoadingCaption(state) {
   var label = String((state && state.busyLabel) || "").trim()
   if (label !== "") return label
   return "Working…"
+}
+
+function withAiSummaries(state, settingValue) {
+  var base = state && typeof state === "object" ? state : emptyState()
+  var enabled = normalizeBool(settingValue, false) || normalizeBool(base.aiSummaries, false)
+  if (base.aiSummaries === enabled) return base
+  var next = {}
+  for (var key in base) next[key] = base[key]
+  next.aiSummaries = enabled
+  return next
+}
+
+function summaryEmptyVisible(state, tabId) {
+  if (String(tabId || "") !== "summary") return false
+  if (String((state && state.summary) || "").trim() !== "") return false
+  if (summaryLoadingVisible(state, tabId)) return false
+  return true
+}
+
+function summaryEmptyGenerate(state, settingValue) {
+  return normalizeBool(settingValue, false) || normalizeBool(state && state.aiSummaries, false)
+}
+
+function summaryDisabledVisible(state, tabId) {
+  return summaryEmptyVisible(state, tabId) && !summaryEmptyGenerate(state)
+}
+
+function summaryDisabledTitle() {
+  return summaryEmptyTitle({ aiSummaries: false })
+}
+
+function summaryDisabledCaption() {
+  return summaryEmptyCaption({ aiSummaries: false })
+}
+
+function summaryDisabledIcon() {
+  return "󰔡" // nf-md-toggle-switch-off
+}
+
+function summaryEmptyIcon(state) {
+  if (summaryEmptyGenerate(state)) return "󰎤"
+  return summaryDisabledIcon()
+}
+
+function summaryEmptyTitle(state) {
+  if (String((state && state.summaryError) || "").trim()) return "Summary failed"
+  if (summaryEmptyGenerate(state)) return "No summary yet"
+  return "AI summary is off"
+}
+
+function summaryEmptyCaption(state) {
+  var err = String((state && state.summaryError) || "").trim()
+  if (err) return err
+  if (!summaryEmptyGenerate(state))
+    return "Enable it in Settings to generate summaries with your default Omarchy agent."
+  if (!state || !String(state.defaultAgent || "").trim())
+    return "Set a default Omarchy agent, then generate a summary from this transcript."
+  if (String((state && state.transcript) || "").trim() === "")
+    return "This meeting has no transcript to summarize."
+  return "Generate an AI summary from this meeting’s transcript."
+}
+
+function summaryEmptyActionLabel(state) {
+  if (summaryEmptyGenerate(state)) return "Generate summary"
+  return "Open Settings"
+}
+
+function summaryEmptyActionTooltip(state) {
+  if (summaryEmptyGenerate(state))
+    return "Summarize this transcript with your default Omarchy agent"
+  return "Enable AI summaries in Settings"
+}
+
+function canGenerateSummary(state) {
+  if (!state || !normalizeBool(state.aiSummaries, false)) return false
+  if (state.recordingThisMeeting === true) return false
+  if (isGeneratingSummary(state)) return false
+  return true
 }
 
 function captureStatusVisible(state) {
@@ -1016,7 +1089,7 @@ function canAskAgent(state) {
 
 function askAgentTooltip(state) {
   if (!state || state.skillInstalled !== true) {
-    return "Installs the /omarchy-meeting-notepad skill globally so your default agent can read this meeting's transcript and notes from any project. After that, Ask Agent opens a prompt with the meeting title and date so you can add your question."
+    return "Copies the bundled /omarchy-meeting-notepad skill into your agent skill folders so your default agent can read this meeting. After that, Ask Agent opens a prompt with the meeting title and date so you can add your question."
   }
   if (!state.defaultAgent)
     return "Set default agent: omarchy default agent <name>"
@@ -1025,7 +1098,7 @@ function askAgentTooltip(state) {
 
 function askAgentListTooltip(state) {
   if (!state || state.skillInstalled !== true)
-    return "Install /omarchy-meeting-notepad globally so any agent can read your meeting notes"
+    return "Copy the bundled /omarchy-meeting-notepad skill so agents can read your meeting notes"
   if (!state.defaultAgent)
     return "Set default agent: omarchy default agent <name>"
   return "Open your default agent with /omarchy-meeting-notepad"
@@ -1103,6 +1176,19 @@ if (typeof module !== "undefined") {
     summaryLoadingVisible: summaryLoadingVisible,
     summaryLoadingTitle: summaryLoadingTitle,
     summaryLoadingCaption: summaryLoadingCaption,
+    withAiSummaries: withAiSummaries,
+    summaryEmptyVisible: summaryEmptyVisible,
+    summaryEmptyGenerate: summaryEmptyGenerate,
+    summaryEmptyIcon: summaryEmptyIcon,
+    summaryEmptyTitle: summaryEmptyTitle,
+    summaryEmptyCaption: summaryEmptyCaption,
+    summaryEmptyActionLabel: summaryEmptyActionLabel,
+    summaryEmptyActionTooltip: summaryEmptyActionTooltip,
+    canGenerateSummary: canGenerateSummary,
+    summaryDisabledVisible: summaryDisabledVisible,
+    summaryDisabledTitle: summaryDisabledTitle,
+    summaryDisabledCaption: summaryDisabledCaption,
+    summaryDisabledIcon: summaryDisabledIcon,
     captureStatusVisible: captureStatusVisible,
     recordingStatusHeadline: recordingStatusHeadline,
     recordingStatusDetail: recordingStatusDetail,
@@ -1116,8 +1202,6 @@ if (typeof module !== "undefined") {
     detailTabTooltip: detailTabTooltip,
     whisperLanguageTooltip: whisperLanguageTooltip,
     listMeetingsMaxTooltip: listMeetingsMaxTooltip,
-    skillGithubSource: skillGithubSource,
-    skillGithubInstallCommand: skillGithubInstallCommand,
     skillInstallLabel: skillInstallLabel,
     skillInstallTooltip: skillInstallTooltip,
     skillInstallStatusText: skillInstallStatusText,

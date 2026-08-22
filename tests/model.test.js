@@ -117,16 +117,19 @@ assert.strictEqual(Model.parseState(JSON.stringify({ onboardingComplete: true })
 assert.strictEqual(Model.parseState(JSON.stringify({ onboardingComplete: false })).onboardingComplete, false)
 assert.strictEqual(Model.parseState(JSON.stringify({ skillInstalled: true })).skillInstalled, true)
 assert.strictEqual(Model.parseState(JSON.stringify({})).skillInstalled, false)
-assert.strictEqual(Model.skillInstallLabel(false), "Install globally")
+assert.strictEqual(Model.skillInstallLabel(false), "Install for agents")
 assert.strictEqual(Model.skillInstallLabel(true), "Already installed")
 assert.strictEqual(Model.skillInstallStatusText(false), "Not installed")
 assert.strictEqual(Model.skillInstallStatusText(true), "Already installed")
-assert.ok(Model.skillInstallTooltip(false).indexOf("terminal") >= 0)
-assert.ok(Model.skillInstallTooltip(true).indexOf("terminal") >= 0)
-assert.ok(Model.skillGithubInstallCommand().indexOf("jlopezxs/omarchy-ai-meeting-notes") >= 0)
-assert.ok(Model.skillGithubInstallCommand().indexOf("--skill omarchy-meeting-notepad") >= 0)
-assert.ok(Model.skillGithubInstallCommand().indexOf(" -g") >= 0)
-assert.ok(Model.skillGithubInstallCommand().indexOf("--yes") >= 0)
+assert.ok(Model.skillInstallTooltip(false).indexOf("bundled") >= 0)
+assert.ok(Model.skillInstallTooltip(true).indexOf("bundled") >= 0)
+assert.ok(Model.skillInstallHelpText().indexOf("npm") >= 0)
+assert.strictEqual(Model.defaultWidgetSettings().aiSummaries, false)
+assert.strictEqual(Model.parseState(JSON.stringify({ aiSummaries: true })).aiSummaries, true)
+assert.strictEqual(Model.parseState(JSON.stringify({ aiSummaries: "true" })).aiSummaries, true)
+assert.strictEqual(Model.withAiSummaries({ aiSummaries: false }, "true").aiSummaries, true)
+assert.strictEqual(Model.summaryEmptyGenerate(Model.withAiSummaries({ aiSummaries: false }, true)), true)
+assert.ok(Model.liveSummaryStatusText({ recordingThisMeeting: true, aiSummaries: false }, 30).indexOf("off") >= 0)
 assert.strictEqual(Model.defaultWidgetSettings().listMeetingsMax, 5)
 assert.strictEqual(Model.defaultWidgetSettings().notesDir, "")
 assert.strictEqual(Model.defaultWidgetSettings().whisperLanguage, "auto")
@@ -154,7 +157,7 @@ assert.strictEqual(Model.normalizeBool(undefined, true), true)
 assert.strictEqual(Model.meetingIcon(), "󱘓")
 assert.strictEqual(Model.panelHeroSubtitle(), "RECORD · TRANSCRIBE · SUMMARIZE")
 assert.strictEqual(Model.settingsBackIcon(), "󰁍")
-assert.strictEqual(Model.settingsHeroSubtitle(), "FOLDER · LANGUAGE · SKILL · DATA")
+assert.strictEqual(Model.settingsHeroSubtitle(), "FOLDER · LANGUAGE · AI · SKILL · DATA")
 assert.strictEqual(Model.liveTranscriptPreview({ liveTranscript: " **Me** hello" }), "**Me** hello")
 assert.strictEqual(Model.parseState(JSON.stringify({ speakerCount: 3 })).speakerCount, 3)
 
@@ -217,6 +220,47 @@ assert.strictEqual(Model.summaryLoadingVisible({ busy: true, busyLabel: "Generat
 assert.strictEqual(Model.summaryLoadingVisible({ busy: true, busyLabel: "Generating summary…" }, "transcript"), false)
 assert.strictEqual(Model.summaryLoadingTitle({ busy: true, busyLabel: "Generating summary…" }), "Generating summary")
 assert.strictEqual(Model.summaryLoadingCaption({ busy: true, busyLabel: "Generating summary…" }), "Generating summary…")
+assert.strictEqual(Model.summaryDisabledVisible({ aiSummaries: false, summary: "" }, "summary"), true)
+assert.strictEqual(Model.summaryDisabledVisible({ aiSummaries: true, summary: "" }, "summary"), false)
+assert.strictEqual(Model.summaryDisabledVisible({ aiSummaries: false, summary: "Done" }, "summary"), false)
+assert.strictEqual(Model.summaryDisabledVisible({ aiSummaries: false, summary: "" }, "transcript"), false)
+assert.strictEqual(Model.summaryDisabledTitle(), "AI summary is off")
+assert.ok(Model.summaryDisabledCaption().indexOf("Settings") >= 0)
+assert.strictEqual(Model.summaryEmptyVisible({ aiSummaries: true, summary: "" }, "summary"), true)
+assert.strictEqual(Model.summaryEmptyGenerate({ aiSummaries: true }), true)
+assert.strictEqual(Model.summaryEmptyTitle({ aiSummaries: true }), "No summary yet")
+assert.strictEqual(Model.summaryEmptyActionLabel({ aiSummaries: true }), "Generate summary")
+assert.strictEqual(Model.canGenerateSummary({
+  aiSummaries: true,
+  defaultAgent: "claude",
+  transcript: "hello",
+  busy: false
+}), true)
+assert.strictEqual(Model.canGenerateSummary({
+  aiSummaries: true,
+  defaultAgent: "claude",
+  transcript: "",
+  busy: false
+}), true)
+assert.strictEqual(Model.canGenerateSummary({
+  aiSummaries: true,
+  recording: true,
+  recordingThisMeeting: false,
+  transcript: "hello"
+}), true)
+assert.strictEqual(Model.canGenerateSummary({
+  aiSummaries: true,
+  recordingThisMeeting: true,
+  transcript: "hello"
+}), false)
+assert.strictEqual(Model.canGenerateSummary({
+  aiSummaries: false,
+  defaultAgent: "claude",
+  transcript: "hello"
+}), false)
+assert.strictEqual(Model.summaryEmptyTitle({ aiSummaries: true, summaryError: "agent failed" }), "Summary failed")
+assert.strictEqual(Model.summaryEmptyCaption({ aiSummaries: true, summaryError: "agent failed" }), "agent failed")
+assert.strictEqual(Model.parseState(JSON.stringify({ summaryError: "nope" })).summaryError, "nope")
 assert.ok(Model.transcriptProgressRatio({ busy: true, busyLabel: "Exporting transcript…" }, 0, 30) > 0.5)
 assert.strictEqual(Model.recordingStatusDetail({ recordingThisMeeting: true, startedAt: 100, durationSecs: 0 }, 173), "01:13")
 assert.strictEqual(Model.recordingOpenPath({ recordingMeetingPath: "/tmp/live", meetingPath: "/tmp/other" }), "/tmp/live")
