@@ -80,6 +80,29 @@ AGENT_TIMEOUT_SEC = 300
 POLL_INTERVAL_SEC = 1.0
 MEETINGS_CACHE: dict[str, Any] = {"generation": -1, "items": []}
 LIVE_CACHE: dict[str, Any] = {"meeting_id": "", "meeting_path": "", "chunk_count": -1, "text": ""}
+CRUSH_DISABLED_TOOLS = [
+    "agent",
+    "agentic_fetch",
+    "bash",
+    "download",
+    "edit",
+    "fetch",
+    "glob",
+    "grep",
+    "job_kill",
+    "job_output",
+    "list_mcp_resources",
+    "ls",
+    "lsp_diagnostics",
+    "lsp_references",
+    "lsp_restart",
+    "multiedit",
+    "read_mcp_resource",
+    "sourcegraph",
+    "todos",
+    "view",
+    "write",
+]
 
 
 @dataclass
@@ -170,6 +193,20 @@ def notes_dir(settings: Settings | None = None) -> Path:
     if raw:
         return Path(os.path.expanduser(raw))
     return DEFAULT_NOTES_DIR
+
+
+def is_plugin_owned_notes_dir(path: Path | str) -> bool:
+    """True when path is the plugin meetings root or a directory inside it."""
+    try:
+        root = Path(DEFAULT_NOTES_DIR).expanduser()
+        if root.is_symlink():
+            return False
+        root_resolved = root.resolve(strict=False)
+        candidate = Path(path).expanduser().resolve(strict=False)
+        candidate.relative_to(root_resolved)
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def ensure_notes_dir(settings: Settings | None = None) -> tuple[bool, str]:
@@ -408,12 +445,18 @@ def uninstall_plugin_changes(*, delete_notes: bool = True) -> dict[str, Any]:
     else:
         messages.append(f"Removed {removed} copied skill directories.")
     state = load_plugin_state()
-    notes = Path(str(state.get("notesDir") or DEFAULT_NOTES_DIR))
-    if delete_notes and notes.is_dir():
+    notes = Path(os.path.expanduser(str(state.get("notesDir") or DEFAULT_NOTES_DIR)))
+    if not delete_notes:
+        messages.append(f"Kept meeting notes at {notes}.")
+    elif not notes.is_dir():
+        messages.append(f"No meeting notes directory at {notes}.")
+    elif not is_plugin_owned_notes_dir(notes):
+        messages.append(
+            f"Kept meeting notes at {notes} (outside {DEFAULT_NOTES_DIR})."
+        )
+    else:
         shutil.rmtree(notes, ignore_errors=True)
         messages.append(f"Deleted meeting notes at {notes}.")
-    elif not delete_notes:
-        messages.append(f"Kept meeting notes at {notes}.")
     reset_onboarding()
     if PLUGIN_STATE_FILE.is_file():
         try:
@@ -1650,35 +1693,123 @@ def scan_saved_meetings(settings: Settings) -> list[dict[str, Any]]:
     return meetings
 
 
-def agent_print_command(agent: str, prompt: str) -> list[str]:
+def write_agent_isolation_config(agent: str, workdir: Path) -> None:
+    name = agent.strip().lower()
+    if name == "opencode":
+        (workdir / "opencode.json").write_text(
+            json.dumps({"permission": {"*": "deny"}}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return
+    if name == "crush":
+        (workdir / "crush.json").write_text(
+            json.dumps({"options": {"disabled_tools": list(CRUSH_DISABLED_TOOLS)}}, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+
+
+def agent_print_command(agent: str, prompt: str, workdir: Path | None = None) -> list[str]:
     agent = agent.strip().lower()
     if not agent:
         raise RuntimeError("No default agent configured. Run: omarchy default agent <name>")
 
-    # Print-only. Do not skip approvals or turn the sandbox off.
-    # Transcript is untrusted speech; never give the agent unrestricted
-    # session access to act on it. Cursor print mode can use write/shell
-    # unless constrained: ask mode is read-only and the sandbox stays on.
+    isolated = str(workdir) if workdir is not None else ""
+
+    # Print-only, with a tool-deny / read-isolation boundary. An empty cwd is
+    # not enough: prompt injection in the transcript must not be able to invoke
+    # tools or read files outside that workspace. Do not skip approvals.
     if agent == "claude":
-        return ["claude", "-p", "--output-format", "text", "--max-turns", "1", prompt]
-    if agent == "codex":
-        return ["codex", "exec", prompt]
-    if agent == "opencode":
-        return ["opencode", "run", prompt]
-    if agent == "crush":
-        return ["crush", "run", prompt]
-    if agent == "gemini":
-        return ["gemini", "-p", prompt]
-    if agent == "copilot":
-        return ["copilot", "-p", prompt]
-    if agent == "omp":
-        return ["omp", prompt]
-    if agent == "pi":
-        return ["pi", prompt]
-    if agent == "grok":
-        return ["grok", "-p", prompt]
-    if agent == "agent":
         return [
+            "claude",
+            "-p",
+            "--output-format",
+            "text",
+            "--max-turns",
+            "1",
+            "--tools",
+            "",
+            "--disallowedTools",
+            "*",
+            "--permission-mode",
+            "dontAsk",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            prompt,
+        ]
+    if agent == "codex":
+        cmd = [
+            "codex",
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--sandbox",
+            "read-only",
+        ]
+        if isolated:
+            cmd.extend(["-C", isolated])
+        cmd.append(prompt)
+        return cmd
+    if agent == "opencode":
+        cmd = ["opencode", "run", "--pure"]
+        if isolated:
+            cmd.extend(["--dir", isolated])
+        cmd.append(prompt)
+        return cmd
+    if agent == "crush":
+        cmd = ["crush", "run"]
+        if isolated:
+            cmd.extend(["--cwd", isolated, "--data-dir", isolated])
+        cmd.append(prompt)
+        return cmd
+    if agent == "gemini":
+        return ["gemini", "--approval-mode", "plan", "--sandbox", "--skip-trust", "-p", prompt]
+    if agent == "copilot":
+        return [
+            "copilot",
+            "--disable-builtin-mcps",
+            "--deny-tool",
+            "shell",
+            "--deny-tool",
+            "write",
+            "--deny-tool",
+            "read",
+            "--excluded-tools",
+            "shell,read,write,edit,grep,glob,web",
+            "-p",
+            prompt,
+        ]
+    if agent == "omp":
+        cmd = ["omp", "--no-tools"]
+        if isolated:
+            cmd.extend(["--cwd", isolated])
+        cmd.extend(["-p", prompt])
+        return cmd
+    if agent == "pi":
+        return ["pi", "--no-tools", "-p", prompt]
+    if agent == "grok":
+        cmd = [
+            "grok",
+            "--tools",
+            "",
+            "--permission-mode",
+            "dontAsk",
+            "--sandbox",
+            "strict",
+            "--disable-web-search",
+            "--no-subagents",
+            "--max-turns",
+            "1",
+        ]
+        if isolated:
+            cmd.extend(["--cwd", isolated])
+        cmd.extend(["-p", prompt])
+        return cmd
+    if agent == "agent":
+        cmd = [
             resolve_agent_binary("agent"),
             "-p",
             "--output-format",
@@ -1687,8 +1818,11 @@ def agent_print_command(agent: str, prompt: str) -> list[str]:
             "ask",
             "--sandbox",
             "enabled",
-            prompt,
         ]
+        if isolated:
+            cmd.extend(["--workspace", isolated])
+        cmd.append(prompt)
+        return cmd
     raise RuntimeError(
         f"Unsupported default agent for print mode: {agent}. "
         "Supported: agent, claude, codex, opencode, crush, gemini, copilot, omp, pi, grok"
@@ -1698,17 +1832,18 @@ def agent_print_command(agent: str, prompt: str) -> list[str]:
 def run_agent_prompt(prompt: str) -> str:
     ensure_user_path()
     agent = read_default_agent()
-    cmd = agent_print_command(agent, prompt)
-    binary = cmd[0]
+    binary_probe = agent_print_command(agent, prompt)
+    binary = binary_probe[0]
     resolved = binary if os.path.isabs(binary) else shutil.which(binary)
     if not resolved or not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
         raise RuntimeError(f"{binary} is not installed (default agent: {agent})")
-    cmd = [resolved, *cmd[1:]]
     try:
         with tempfile.TemporaryDirectory(prefix="omarchy-meetings-agent-") as workdir:
-            if agent.strip().lower() == "agent":
-                cmd = [cmd[0], "--workspace", workdir, *cmd[1:]]
-            result = run(cmd, cwd=Path(workdir), timeout=AGENT_TIMEOUT_SEC)
+            work = Path(workdir)
+            write_agent_isolation_config(agent, work)
+            cmd = agent_print_command(agent, prompt, workdir=work)
+            cmd = [resolved, *cmd[1:]]
+            result = run(cmd, cwd=work, timeout=AGENT_TIMEOUT_SEC)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{Path(binary).name} timed out after {AGENT_TIMEOUT_SEC}s") from exc
     except OSError as exc:

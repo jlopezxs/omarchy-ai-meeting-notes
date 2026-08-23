@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reverse Voxtype config changes, remove copied agent skills,
-# and delete local meeting notes. Run this BEFORE `omarchy plugin remove`.
+# and delete plugin-owned meeting notes. Run this BEFORE `omarchy plugin remove`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -12,7 +12,8 @@ Usage: uninstall.sh [--keep-notes]
 
 Restores Voxtype config from the backup taken before this plugin changed it,
 asks Voxtype to reread that config, removes copied agent skills, deletes
-onboarding state, and (unless --keep-notes) deletes local meeting markdown.
+onboarding state, and (unless --keep-notes) deletes meeting notes only when
+they are under ~/.local/state/omarchy/meetings.
 
 Then remove the plugin itself:
   omarchy plugin remove jlopezxs.meetings

@@ -44,7 +44,7 @@ Run this first:
 omarchy plugin remove jlopezxs.meetings
 ```
 
-That restores `~/.config/voxtype/config.toml` from the backup taken before this plugin changed it, asks Voxtype to reread config, removes copied agent skills, and deletes local meeting markdown plus onboarding state.
+That restores `~/.config/voxtype/config.toml` from the backup taken before this plugin changed it, asks Voxtype to reread config, removes copied agent skills, and deletes meeting notes under `~/.local/state/omarchy/meetings` plus onboarding state. A custom notes folder outside that path is left in place.
 
 To keep notes:
 

@@ -24,6 +24,14 @@ assert "no API, no cloud" not in text
 helper = Path("scripts/meetings").read_text(encoding="utf-8")
 for token in ("bypassPermissions", "dangerously-bypass", "--yolo", "--allow-all", "--auto-approve", "--trust", "--approve-mcps", "--sandbox disabled", "npx ", "systemctl"):
     assert token not in helper, f"helper still contains {token}"
+assert "--disallowedTools" in helper
+assert "--ignore-user-config" in helper
+assert "--no-tools" in helper
+assert "is_plugin_owned_notes_dir" in helper
+assert "write_agent_isolation_config" in helper
+source = helper
+assert "is_plugin_owned_notes_dir(notes)" in source
+assert source.index("is_plugin_owned_notes_dir(notes)") < source.index("shutil.rmtree(notes")
 assert Path("uninstall.sh").is_file(), "missing uninstall.sh"
 print("skill: ok")
 PY
